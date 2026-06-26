@@ -82,9 +82,9 @@ final class AppModel: ObservableObject {
         self.recentProjects = projectService.recents()
 
         let saved = chatStore.load()
-        let active = saved.filter { !$0.isArchived }.sorted { $0.updatedAt > $1.updatedAt }
+        let active = saved.filter { !$0.isArchived }.sorted { $0.lastOpenedAt > $1.lastOpenedAt }
 
-        // Restore the project the most-recent chat belongs to (else the most
+        // Restore the project the last-used chat belongs to (else the most
         // recently opened project), so a reopened chat isn't orphaned.
         let restorePath = active.first?.projectPath
         let restored = recentProjects.first(where: { $0.path == restorePath }) ?? recentProjects.first
@@ -156,21 +156,21 @@ final class AppModel: ObservableObject {
         recentProjects = projectService.recents()
         reloadProvider()
 
-        // Reopen the project's existing chats; land on the most recent one.
+        // Reopen the project's existing chats; land on the one last used here.
         let existing = sessions
             .filter { $0.projectPath == project.path && !$0.isArchived }
-            .sorted { $0.updatedAt > $1.updatedAt }
-        if let latest = existing.first {
-            session = latest
+            .sorted { $0.lastOpenedAt > $1.lastOpenedAt }
+        if let lastUsed = existing.first {
+            activate(lastUsed)
             statusText = "Reopened \(existing.count) chat\(existing.count == 1 ? "" : "s")"
         } else if !session.messages.contains(where: { $0.role == .user }) {
             session.projectPath = project.path // reuse the empty welcome chat
+            applyClaudeSession()
             appendSystem("Opened project: \(project.path)")
         } else {
             startNewSession(projectPath: project.path, announce: false)
             appendSystem("Opened project: \(project.path)")
         }
-        applyClaudeSession()
 
         if let url = projectURL {
             projectInitialized = projectService.isInitializedForAI(at: url)
@@ -265,11 +265,23 @@ final class AppModel: ObservableObject {
     /// Chats for the current project, newest first (active / archived split).
     var activeSessions: [ChatSession] {
         sessions.filter { !$0.isArchived && belongsToCurrentProject($0) }
-            .sorted { $0.updatedAt > $1.updatedAt }
+            .sorted { $0.lastOpenedAt > $1.lastOpenedAt }
     }
     var archivedSessions: [ChatSession] {
         sessions.filter { $0.isArchived && belongsToCurrentProject($0) }
-            .sorted { $0.updatedAt > $1.updatedAt }
+            .sorted { $0.lastOpenedAt > $1.lastOpenedAt }
+    }
+
+    /// Make a chat the active one and mark it as just-opened, so reopening the
+    /// project later lands back here (and it sorts to the top of the list).
+    private func activate(_ chat: ChatSession) {
+        var c = chat
+        c.lastOpenedAt = Date()
+        session = c
+        if let i = sessions.firstIndex(where: { $0.id == c.id }) {
+            sessions[i].lastOpenedAt = c.lastOpenedAt
+        }
+        applyClaudeSession()
     }
 
     private func belongsToCurrentProject(_ s: ChatSession) -> Bool {
@@ -313,8 +325,7 @@ final class AppModel: ObservableObject {
     func selectSession(_ id: UUID) {
         guard id != session.id, let target = sessions.first(where: { $0.id == id }) else { return }
         persist()
-        session = target
-        applyClaudeSession()
+        activate(target)
     }
 
     /// Other active chats in this project, ranked by topic similarity (for merge).
@@ -340,8 +351,7 @@ final class AppModel: ObservableObject {
         let merged = sessions[ti]
         sessions.removeAll { $0.id == sourceId }
         if session.id == sourceId || session.id == targetId {
-            session = merged
-            applyClaudeSession()
+            activate(merged)
         }
         chatStore.save(sessions)
     }
@@ -376,8 +386,7 @@ final class AppModel: ObservableObject {
 
     private func switchToAnotherOrNew() {
         if let next = sessions.first(where: { $0.id != session.id && !$0.isArchived && belongsToCurrentProject($0) }) {
-            session = next
-            applyClaudeSession()
+            activate(next)
             chatStore.save(sessions)
         } else {
             startNewSession(projectPath: currentProject?.path, announce: false)
@@ -417,6 +426,7 @@ final class AppModel: ObservableObject {
         draft = ""
         pendingAttachments = []
         if !raw.isEmpty { inputHistory.append(raw) }
+        session.lastOpenedAt = Date() // prompting marks this as the last-used chat
         streamTask = Task { await runTurn(raw, attachments: attachments) }
     }
 
@@ -471,23 +481,57 @@ final class AppModel: ObservableObject {
     }
 
     @Published var isImproving = false
+    /// Transient feedback shown after "Make clearer" runs.
+    @Published var improveNote: String?
+    private var draftBeforeImprove: String?
+    var canUndoImprove: Bool { draftBeforeImprove != nil }
 
     /// Rewrite the current draft in place (for review) — does NOT send.
     /// Uses Claude for a real rewrite when available, with an instant local
-    /// cleanup as fallback.
+    /// cleanup as fallback. Always reports back what it did.
     func improveDraft() {
         let raw = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty, !isImproving else { return }
+        let original = draft
 
         if let claude = aiService.provider as? ClaudeCodeProvider {
             isImproving = true
+            improveNote = nil
             Task {
                 let improved = await claude.rewrite(raw)
                 isImproving = false
-                draft = improved ?? MessageImprovementService.heuristicRewrite(raw)
+                applyImprovement(improved ?? MessageImprovementService.heuristicRewrite(raw),
+                                 original: original, aiUsed: improved != nil)
             }
         } else {
-            draft = MessageImprovementService.heuristicRewrite(raw)
+            applyImprovement(MessageImprovementService.heuristicRewrite(raw),
+                             original: original, aiUsed: false)
+        }
+    }
+
+    private func applyImprovement(_ text: String, original: String, aiUsed: Bool) {
+        if text.trimmingCharacters(in: .whitespacesAndNewlines)
+            == original.trimmingCharacters(in: .whitespacesAndNewlines) {
+            draftBeforeImprove = nil
+            flashImproveNote("Already clear — no changes made.")
+        } else {
+            draft = text
+            draftBeforeImprove = original
+            flashImproveNote(aiUsed ? "✦ Rewritten with Claude — review, then send." : "Cleaned up — review, then send.")
+        }
+    }
+
+    func undoImprove() {
+        if let original = draftBeforeImprove { draft = original }
+        draftBeforeImprove = nil
+        improveNote = nil
+    }
+
+    private func flashImproveNote(_ message: String) {
+        improveNote = message
+        Task {
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            if improveNote == message { improveNote = nil }
         }
     }
 
@@ -516,6 +560,66 @@ final class AppModel: ObservableObject {
             appendSystemPrompt: behaviorDirectives()
         )
         await streamAssistant(request)
+
+        if settings.automationEnabled { await runPipeline() }
+    }
+
+    // MARK: - Automation pipeline
+
+    enum StepState: Equatable { case idle, running, done }
+    @Published var stepStatus: [AutomationStep.Kind: StepState] = [:]
+
+    /// Run the enabled post-task steps in order, each as a Claude follow-up turn.
+    private func runPipeline() async {
+        let steps = settings.automationSteps.filter(\.enabled)
+        guard !steps.isEmpty else { return }
+
+        stepStatus = Dictionary(uniqueKeysWithValues: steps.map { ($0.kind, .idle) })
+        for step in steps {
+            if Task.isCancelled { break }
+            stepStatus[step.kind] = .running
+            appendSystem("▶︎ Automation — \(step.kind.title)")
+            await runStep(step.kind)
+            stepStatus[step.kind] = .done
+        }
+        // Clear the status strip a few seconds after finishing.
+        let snapshot = stepStatus
+        Task {
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if stepStatus == snapshot { stepStatus = [:] }
+        }
+    }
+
+    private func runStep(_ kind: AutomationStep.Kind) async {
+        let context = await currentContext()
+        let request = AIRequest(
+            systemPrompt: aiService.systemPrompt(improvement: improvement, context: context,
+                                                 autoApply: settings.autoApplyTrustedChanges),
+            history: session.messages,
+            userMessage: stepPrompt(for: kind),
+            context: context,
+            appendSystemPrompt: behaviorDirectives()
+        )
+        await streamAssistant(request)
+    }
+
+    /// The effective base/target branch for merges: the user's setting, else
+    /// the repo's detected main/master, else "main".
+    var releaseBranch: String {
+        let configured = settings.releaseBranch.trimmingCharacters(in: .whitespaces)
+        return configured.isEmpty ? (baseBranch ?? "main") : configured
+    }
+
+    private func stepPrompt(for kind: AutomationStep.Kind) -> String {
+        switch kind {
+        case .mergeAndPush:
+            let base = releaseBranch
+            return """
+            Commit any pending changes with a concise message. Then integrate the current branch into the `\(base)` branch and push `\(base)` to origin. If you are already on `\(base)`, just commit and push. Resolve trivial conflicts; if there are non-trivial conflicts, stop and report them. Report the final branch and the pushed commit.
+            """
+        default:
+            return kind.prompt
+        }
     }
 
     private func streamAssistant(_ request: AIRequest) async {

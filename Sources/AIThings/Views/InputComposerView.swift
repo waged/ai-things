@@ -16,6 +16,22 @@ struct InputComposerView: View {
                 routeBanner(route)
             }
 
+            if let note = model.improveNote {
+                HStack(spacing: 8) {
+                    Text(note).foregroundStyle(Theme.textSecondary)
+                    Spacer(minLength: 8)
+                    if model.canUndoImprove {
+                        Button("Undo") { model.undoImprove() }
+                            .buttonStyle(.bordered).controlSize(.small)
+                    }
+                }
+                .font(Theme.mono(10.5))
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(Theme.surfaceElevated)
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+                .transition(.opacity)
+            }
+
             if !model.pendingAttachments.isEmpty {
                 AttachmentPreviewView(attachments: model.pendingAttachments) { attachment in
                     model.removeAttachment(attachment)

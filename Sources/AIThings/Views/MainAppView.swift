@@ -19,6 +19,8 @@ struct MainAppView: View {
                 VStack(spacing: 0) {
                     GitToolbarView(showBranchCreator: $showBranchCreator)
                     Divider().overlay(Theme.border)
+                    AutomationBarView()
+                    Divider().overlay(Theme.border)
                     TerminalChatView()
                     Divider().overlay(Theme.border)
                     InputComposerView()

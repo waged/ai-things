@@ -39,15 +39,19 @@ final class ClaudeCodeProvider: AIProvider {
     func rewrite(_ text: String) async -> String? {
         guard let cli = resolveCLI() else { return nil }
         let prompt = """
-        Rewrite the user's message to be clear, concise, and grammatically correct.
-        Preserve the original meaning and intent. Keep any code, file paths, and
-        inline tokens like [[img:abc12345]] exactly as-is. Do not answer or execute
-        the request — only rewrite it. Reply with ONLY the rewritten message.
+        Your job: improve a PROMPT that will be sent to a coding agent to carry out a software task. Rewrite the user's text into one clear, precise instruction the agent can act on.
 
-        Message:
+        Rules:
+        - Keep it an imperative instruction (a task to perform). NEVER turn it into a question. NEVER answer, explain, or perform it.
+        - Preserve the original intent and scope exactly — do not add, drop, or invent requirements or assumptions.
+        - Keep all technical details verbatim: file paths, code, identifiers, and inline tokens like [[img:abc12345]].
+        - Make it specific and unambiguous; remove filler and vague wording. No greetings, preamble, commentary, or surrounding quotes.
+        - Output ONLY the rewritten instruction text, nothing else.
+
+        User text:
         \(text)
         """
-        return await withCheckedContinuation { continuation in
+        let raw: String? = await withCheckedContinuation { continuation in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: cli.binary)
             process.arguments = ["-p", prompt, "--output-format", "text", "--model", "haiku"]
@@ -64,6 +68,23 @@ final class ClaudeCodeProvider: AIProvider {
             }
             do { try process.run() } catch { continuation.resume(returning: nil) }
         }
+        return raw.map(Self.sanitizeRewrite)
+    }
+
+    /// Strip wrappers Haiku sometimes adds despite instructions (surrounding
+    /// quotes, a "Rewritten:"-style lead-in).
+    private static func sanitizeRewrite(_ text: String) -> String {
+        var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let leadIns = ["rewritten prompt:", "rewritten instruction:", "rewritten:", "here is the rewritten prompt:", "here's the rewritten prompt:", "prompt:"]
+        for lead in leadIns where s.lowercased().hasPrefix(lead) {
+            s = String(s.dropFirst(lead.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            break
+        }
+        if s.count >= 2, let f = s.first, let l = s.last,
+           (f == "\"" && l == "\"") || (f == "'" && l == "'") || (f == "“" && l == "”") {
+            s = String(s.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return s
     }
 
     var hasResolvedCLI: Bool { Self.resolved != nil || resolveCLI() != nil }

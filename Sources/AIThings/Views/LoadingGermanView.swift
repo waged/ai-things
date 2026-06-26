@@ -30,7 +30,7 @@ struct LoadingGermanView: View {
             Button {
                 GermanCoach.openResources()
             } label: {
-                Label("Free German resources (DW & more)", systemImage: "graduationcap")
+                Label("Workplace German — phrases, flashcards & quiz", systemImage: "graduationcap")
                     .font(Theme.mono(10.5))
             }
             .buttonStyle(.plain)

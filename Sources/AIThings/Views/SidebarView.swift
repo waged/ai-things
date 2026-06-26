@@ -247,6 +247,11 @@ struct SidebarView: View {
                 Label("Settings", systemImage: "gearshape").frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain).foregroundStyle(Theme.textSecondary)
+
+            Button { GermanCoach.openResources() } label: {
+                Label("Learn German", systemImage: "graduationcap").frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain).foregroundStyle(Theme.textSecondary)
         }
     }
 

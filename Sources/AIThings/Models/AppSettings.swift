@@ -50,4 +50,40 @@ struct AppSettings: Codable, Equatable {
 
     /// Simulated streaming speed for the mock provider, in seconds per chunk.
     var mockStreamDelay: Double = 0.02
+
+    /// Automation pipeline: run post-task steps after each sent task.
+    var automationEnabled: Bool = false
+    var automationSteps: [AutomationStep] = AutomationStep.defaults
+    /// Target branch for the "Merge & push" step. Empty = auto-detect main/master.
+    var releaseBranch: String = ""
+
+    init() {}
+
+    // Tolerant decoding so adding new fields never wipes saved settings.
+    private enum CodingKeys: String, CodingKey {
+        case providerKind, modelName, customEndpoint, skipPermissions, autoApplyTrustedChanges
+        case defaultImprovement, confirmDestructiveActions, mockStreamDelay
+        case automationEnabled, automationSteps, releaseBranch
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        providerKind = (try? c.decode(AIProviderKind.self, forKey: .providerKind)) ?? .claudeCode
+        modelName = (try? c.decode(String.self, forKey: .modelName)) ?? ""
+        customEndpoint = (try? c.decode(String.self, forKey: .customEndpoint)) ?? ""
+        skipPermissions = (try? c.decode(Bool.self, forKey: .skipPermissions)) ?? true
+        autoApplyTrustedChanges = (try? c.decode(Bool.self, forKey: .autoApplyTrustedChanges)) ?? false
+        defaultImprovement = (try? c.decode(MessageImprovementSettings.self, forKey: .defaultImprovement)) ?? MessageImprovementSettings()
+        confirmDestructiveActions = (try? c.decode(Bool.self, forKey: .confirmDestructiveActions)) ?? true
+        mockStreamDelay = (try? c.decode(Double.self, forKey: .mockStreamDelay)) ?? 0.02
+        automationEnabled = (try? c.decode(Bool.self, forKey: .automationEnabled)) ?? false
+        releaseBranch = (try? c.decode(String.self, forKey: .releaseBranch)) ?? ""
+        let steps = (try? c.decode([AutomationStep].self, forKey: .automationSteps)) ?? AutomationStep.defaults
+        // Make sure newly-added step kinds appear even in older saved settings.
+        var merged = steps
+        for missing in AutomationStep.defaults where !merged.contains(where: { $0.kind == missing.kind }) {
+            merged.append(missing)
+        }
+        automationSteps = merged
+    }
 }
