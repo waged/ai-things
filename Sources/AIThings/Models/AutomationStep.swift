@@ -61,7 +61,7 @@ extension AutomationStep.Kind {
     var detail: String {
         switch self {
         case .review:        return "Verify rules, fix, must pass (gate)"
-        case .test:          return "Run tests, fix, must pass (gate)"
+        case .test:          return "Add/adjust tests, run, must pass (gate)"
         case .translations:  return "Add any missing translations"
         case .updateDocs:    return "Refresh CLAUDE.md & .aithings docs"
         case .bumpVersion:   return "Increment the project version"
@@ -76,7 +76,7 @@ extension AutomationStep.Kind {
         case .review:
             return "Review the change you just made: confirm it is correct and builds/compiles. If you find problems, fix them. Then give a 1–2 line verdict."
         case .test:
-            return "Run the project's test suite (detect the right command, e.g. xcodebuild test / swift test / npm test). Report pass/fail. If tests fail, fix them and re-run until green or explain what's blocking."
+            return "Make the project's tests reflect the change you just made: decide whether new behavior needs new tests and add them, and update any existing tests the change affects. Then detect the project's test command (e.g. xcodebuild test / swift test / npm test) and run the suite. If tests fail, fix them and re-run until green or explain what's blocking."
         case .mergeAndPush:
             // The target branch is injected by the app at run time.
             return "Commit any pending changes, then merge the current branch into the base branch and push it to origin. Report what you did."

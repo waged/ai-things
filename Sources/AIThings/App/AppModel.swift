@@ -702,7 +702,12 @@ final class AppModel: ObservableObject {
             }
             return p + gate
         case .test:
-            return kind.prompt + gate
+            let rules = settings.testRules.trimmingCharacters(in: .whitespacesAndNewlines)
+            var p = kind.prompt
+            if !rules.isEmpty {
+                p += "\n\nFollow these testing rules when deciding what to add or change:\n\(rules)"
+            }
+            return p + gate
         case .bumpVersion:
             let part = settings.versionBump.rawValue
             return "A unit of work is complete. Using semantic versioning, bump the \(part.uppercased()) version component (major → x.0.0, minor → maj.x.0, patch → maj.min.x; reset lower components). Find where the version is defined (e.g. project.yml MARKETING_VERSION, package.json, Info.plist) and update it. State the old and new version in one line."

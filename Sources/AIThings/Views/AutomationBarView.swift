@@ -136,6 +136,7 @@ struct AutomationBarView: View {
 
                     // Per-step config, inline right under its own row.
                     if step.kind == .review && step.enabled { reviewChecklist }
+                    if step.kind == .test && step.enabled { testInstructions }
                     if step.kind == .bumpVersion && step.enabled { versionBumpField }
                     if step.kind == .mergeAndPush && step.enabled { mergeTargetField }
                 }
@@ -163,6 +164,23 @@ struct AutomationBarView: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
         }
         .padding(.leading, 22) // indent under the Review row
+        .padding(.bottom, 4)
+    }
+
+    private var testInstructions: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Testing rules — what to add / adjust (the Test gate follows these):")
+                .font(Theme.mono(9.5)).foregroundStyle(Theme.textSecondary)
+            TextEditor(text: $model.settings.testRules)
+                .font(Theme.mono(10.5))
+                .scrollContentBackground(.hidden)
+                .frame(height: 96)
+                .padding(6)
+                .background(Theme.surfaceElevated)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+        }
+        .padding(.leading, 22) // indent under the Test row
         .padding(.bottom, 4)
     }
 

@@ -65,6 +65,9 @@ struct AppSettings: Codable, Equatable {
     var releaseBranch: String = ""
     /// Rules the "Review" automation step checks the change against. Editable.
     var reviewRules: String = AppSettings.defaultReviewRules
+    /// Instructions the "Test" automation step follows when adding/adjusting
+    /// tests for the change. Editable.
+    var testRules: String = AppSettings.defaultTestRules
     /// Which version component the "Bump version" step increments.
     var versionBump: VersionBump = .patch
 
@@ -77,13 +80,21 @@ struct AppSettings: Codable, Equatable {
     - Small, well-named functions; match the surrounding style; no dead code.
     """
 
+    static let defaultTestRules = """
+    - Add tests for the new or changed behavior this task introduced.
+    - Update existing tests that this change affects; don't weaken or delete assertions just to make them pass.
+    - Cover edge cases and error paths, not only the happy path.
+    - Match the project's existing test framework, layout, and naming.
+    - Keep tests fast, isolated, and deterministic (avoid real network/disk/time where possible).
+    """
+
     init() {}
 
     // Tolerant decoding so adding new fields never wipes saved settings.
     private enum CodingKeys: String, CodingKey {
         case providerKind, modelName, customEndpoint, skipPermissions, autoApplyTrustedChanges
         case defaultImprovement, confirmDestructiveActions, mockStreamDelay
-        case automationEnabled, automationSteps, releaseBranch, reviewRules, versionBump
+        case automationEnabled, automationSteps, releaseBranch, reviewRules, testRules, versionBump
     }
 
     init(from decoder: Decoder) throws {
@@ -99,6 +110,7 @@ struct AppSettings: Codable, Equatable {
         automationEnabled = (try? c.decode(Bool.self, forKey: .automationEnabled)) ?? false
         releaseBranch = (try? c.decode(String.self, forKey: .releaseBranch)) ?? ""
         reviewRules = (try? c.decode(String.self, forKey: .reviewRules)) ?? AppSettings.defaultReviewRules
+        testRules = (try? c.decode(String.self, forKey: .testRules)) ?? AppSettings.defaultTestRules
         versionBump = (try? c.decode(VersionBump.self, forKey: .versionBump)) ?? .patch
         let saved = (try? c.decode([AutomationStep].self, forKey: .automationSteps)) ?? []
         // Always present steps in the canonical pipeline order (review → test →
