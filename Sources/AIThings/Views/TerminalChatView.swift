@@ -11,9 +11,18 @@ struct TerminalChatView: View {
                     if model.session.messages.isEmpty {
                         emptyState
                     }
-                    ForEach(model.session.messages) { message in
+                    // Hide the placeholder bubble for an as-yet-empty reply.
+                    ForEach(model.session.messages.filter { !($0.role == .assistant && $0.text.isEmpty) }) { message in
                         ChatMessageView(message: message)
                             .id(message.id)
+                    }
+                    // Pinned while Claude works — shows on the first wait and on
+                    // every mid-turn "thinking again" gap, too.
+                    if model.isStreaming {
+                        LoadingGermanView()
+                            .id(loadingID)
+                            .padding(.top, 4)
+                            .padding(.bottom, 10)
                     }
                 }
                 .padding(16)
@@ -27,10 +36,19 @@ struct TerminalChatView: View {
             .onChange(of: model.session.messages.count) { _, _ in
                 scrollToBottom(proxy)
             }
+            .onChange(of: model.isStreaming) { _, streaming in
+                if streaming { withAnimation { proxy.scrollTo(loadingID, anchor: .bottom) } }
+            }
         }
     }
 
+    private let loadingID = "loading-german"
+
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        if model.isStreaming {
+            withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(loadingID, anchor: .bottom) }
+            return
+        }
         guard let last = model.session.messages.last else { return }
         withAnimation(.easeOut(duration: 0.15)) {
             proxy.scrollTo(last.id, anchor: .bottom)

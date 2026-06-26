@@ -49,6 +49,31 @@ enum Theme {
     static let cornerRadius: CGFloat = 8
 }
 
+/// A pill toggle with an unmistakable on/off state: vivid green when enabled,
+/// muted grey when not.
+struct VividToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            configuration.isOn.toggle()
+        } label: {
+            configuration.label
+                // Constant weight + size so toggling never changes the layout.
+                .font(Theme.mono(10.5, weight: .semibold))
+                .foregroundStyle(configuration.isOn ? Theme.background : Theme.textSecondary)
+                .padding(.horizontal, 11)
+                .frame(height: 26)
+                .background(
+                    Capsule().fill(configuration.isOn ? Theme.success : Theme.surfaceElevated)
+                )
+                .overlay(
+                    Capsule().stroke(configuration.isOn ? Color.clear : Theme.border, lineWidth: 1)
+                )
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 extension View {
     /// A subtle card surface used throughout the UI.
     func terminalCard() -> some View {

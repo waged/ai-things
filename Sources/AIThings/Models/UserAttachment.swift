@@ -43,4 +43,12 @@ struct UserAttachment: Identifiable, Codable, Equatable {
         case .codeSnippet: return "chevron.left.forwardslash.chevron.right"
         }
     }
+
+    /// Short id used inside inline reference tokens.
+    var shortID: String { String(id.uuidString.prefix(8)) }
+
+    /// Token embedded in the message text to mark where this attachment sits,
+    /// e.g. `[[img:1A2B3C4D]]`. Rendered inline in chat; replaced with a file
+    /// path when the message is sent to the AI.
+    var inlineToken: String { "[[img:\(shortID)]]" }
 }

@@ -5,13 +5,16 @@ import UniformTypeIdentifiers
 /// Handles paste, drag-and-drop, history recall, and keyboard shortcuts.
 struct InputComposerView: View {
     @EnvironmentObject private var model: AppModel
-    @FocusState private var inputFocused: Bool
     @State private var isDropTarget = false
     @State private var historyIndex: Int? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             togglesRow
+
+            if let route = model.pendingRoute {
+                routeBanner(route)
+            }
 
             if !model.pendingAttachments.isEmpty {
                 AttachmentPreviewView(attachments: model.pendingAttachments) { attachment in
@@ -24,60 +27,121 @@ struct InputComposerView: View {
         }
         .padding(12)
         .background(Theme.surface)
-        .onChange(of: model.focusComposerRequested) { _, _ in inputFocused = true }
+    }
+
+    // MARK: - Route suggestion
+
+    private func routeBanner(_ route: AppModel.RouteSuggestion) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.triangle.branch").foregroundStyle(Theme.highlight)
+            Text("This looks related to ")
+                .foregroundStyle(Theme.textSecondary)
+            + Text("“\(route.title)”").foregroundStyle(Theme.textPrimary)
+            Spacer(minLength: 8)
+            Button("Move there") { model.routeMoveToTarget() }
+                .buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.accent)
+            Button("Keep here") { model.routeKeepHere() }
+                .buttonStyle(.bordered).controlSize(.small)
+            Button("New chat") { model.routeToNewChat() }
+                .buttonStyle(.bordered).controlSize(.small)
+        }
+        .font(Theme.mono(11))
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background(Theme.accent.opacity(0.14))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.accent.opacity(0.4), lineWidth: 1))
     }
 
     // MARK: - Toggles
 
     private var togglesRow: some View {
-        HStack(spacing: 14) {
-            toggle("Make message clearer", isOn: $model.improvement.makeClearer, symbol: "wand.and.stars")
+        HStack(spacing: 10) {
+            // One-shot: tidy the draft in place for review (does not send).
+            Button { model.improveDraft() } label: {
+                Label("Make clearer", systemImage: "wand.and.stars")
+                    .font(Theme.mono(10.5))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(Theme.accent)
+            .disabled(model.draft.trimmingCharacters(in: .whitespaces).isEmpty)
+            .help("Clean up the draft (trim filler, fix spacing) — review before sending")
+
             toggle("Ask questions first", isOn: $model.improvement.askQuestionsFirst, symbol: "questionmark.circle")
             toggle("Direct mode", isOn: $model.improvement.directMode, symbol: "bolt")
+
+            Divider().frame(height: 16).overlay(Theme.border)
+
+            modeToggle("Feature", mode: .feature, symbol: "sparkles")
+            modeToggle("Bug Fix", mode: .bug, symbol: "ant")
+
             Spacer()
+
+            // Far-right: ultra-concise answers to save tokens.
+            toggle("Precise", isOn: $model.improvement.precise, symbol: "scissors")
         }
+    }
+
+    /// Feature / Bug mode buttons — frame the prompt and (from the base branch)
+    /// auto-create the matching branch from the message text.
+    private func modeToggle(_ title: String, mode: AppModel.TaskMode, symbol: String) -> some View {
+        Toggle(isOn: Binding(
+            get: { model.taskMode == mode },
+            set: { _ in model.toggleTaskMode(mode) }
+        )) {
+            Label(title, systemImage: symbol)
+        }
+        .toggleStyle(VividToggleStyle())
+        .help(mode == .bug ? "Frame this as a bug fix" : "Frame this as a new feature")
     }
 
     private func toggle(_ title: String, isOn: Binding<Bool>, symbol: String) -> some View {
         Toggle(isOn: isOn) {
             Label(title, systemImage: symbol)
-                .font(Theme.mono(10.5))
         }
-        .toggleStyle(.button)
-        .controlSize(.small)
-        .tint(Theme.accent)
+        .toggleStyle(VividToggleStyle())
         .help(title)
     }
 
     // MARK: - Input field
 
     private var inputField: some View {
-        TextEditor(text: $model.draft)
-            .font(Theme.mono(13))
-            .foregroundStyle(Theme.textPrimary)
-            .scrollContentBackground(.hidden)
-            .frame(minHeight: 56, maxHeight: 140)
-            .padding(8)
-            .background(Theme.surfaceElevated)
-            .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius))
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.cornerRadius)
-                    .stroke(isDropTarget ? Theme.accent : Theme.border,
-                            lineWidth: isDropTarget ? 2 : 1)
+        ZStack(alignment: .topLeading) {
+            CodeTextEditor(
+                text: $model.draft,
+                focusToggle: model.focusComposerRequested,
+                onSubmit: { send() },
+                onEscape: { if model.isStreaming { model.cancelStreaming() } else { model.draft = "" } },
+                onArrowUp: {
+                    guard model.draft.isEmpty || historyIndex != nil else { return false }
+                    recallHistory(offset: -1); return true
+                },
+                onArrowDown: {
+                    guard historyIndex != nil else { return false }
+                    recallHistory(offset: 1); return true
+                },
+                onPasteImages: { model.pasteImagesReturningTokens() }
             )
-            .focused($inputFocused)
-            .onKeyPress(phases: .down, action: handleKeyPress)
-            .onDrop(of: [.fileURL], isTargeted: $isDropTarget, perform: handleDrop)
-            .overlay(alignment: .topLeading) {
-                if model.draft.isEmpty {
-                    Text("Describe a task…  (⌘↩ to send, drag files/images here)")
-                        .font(Theme.mono(13))
-                        .foregroundStyle(Theme.textSecondary.opacity(0.7))
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 16)
-                        .allowsHitTesting(false)
-                }
+            .frame(minHeight: 60, maxHeight: 150)
+
+            if model.draft.isEmpty {
+                Text("Describe a task…  (⌘↩ to send · paste/drag images)")
+                    .font(Theme.mono(13))
+                    .foregroundStyle(Theme.textSecondary.opacity(0.55))
+                    .padding(.leading, 42) // clear the line-number gutter
+                    .padding(.top, 8)
+                    .allowsHitTesting(false)
             }
+        }
+        .padding(.vertical, 2)
+        .background(Theme.surfaceElevated)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.cornerRadius)
+                .stroke(isDropTarget ? Theme.accent : Theme.border,
+                        lineWidth: isDropTarget ? 2 : 1)
+        )
+        .onDrop(of: [.fileURL], isTargeted: $isDropTarget, perform: handleDrop)
     }
 
     // MARK: - Actions
@@ -130,31 +194,6 @@ struct InputComposerView: View {
     private func send() {
         historyIndex = nil
         model.send()
-        inputFocused = true
-    }
-
-    /// ⌘↩ send · Esc cancel/clear · ↑/↓ recall previous inputs (when empty).
-    private func handleKeyPress(_ press: KeyPress) -> KeyPress.Result {
-        switch press.key {
-        case .return where press.modifiers.contains(.command):
-            send()
-            return .handled
-
-        case .escape:
-            if model.isStreaming { model.cancelStreaming() } else { model.draft = "" }
-            return .handled
-
-        case .upArrow where model.draft.isEmpty || historyIndex != nil:
-            recallHistory(offset: -1)
-            return .handled
-
-        case .downArrow where historyIndex != nil:
-            recallHistory(offset: 1)
-            return .handled
-
-        default:
-            return .ignored
-        }
     }
 
     private func recallHistory(offset: Int) {

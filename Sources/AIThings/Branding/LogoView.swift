@@ -1,32 +1,41 @@
 import SwiftUI
 
-/// The things-connect brand mark: a ring with a centered dot (the motif from
-/// the logo, where it replaces the "O"). Drawn with pure SwiftUI so it stays
-/// crisp at any size and adopts the theme color.
+/// The things-connect brand mark: a ring. By default it carries the brand dot;
+/// with `text` it carries a short label (we use "AI") inside the circle.
+/// Drawn with pure SwiftUI so it stays crisp at any size and adopts the theme.
 struct BrandMark: View {
-    var diameter: CGFloat = 18
-    var color: Color = Theme.textPrimary
+    var diameter: CGFloat = 22
+    var color: Color = Theme.highlight
+    /// Text shown inside the ring (e.g. "AI"). When nil, draws the brand dot.
+    var text: String? = "AI"
 
     var body: some View {
         ZStack {
             Circle()
-                .stroke(color, lineWidth: diameter * 0.16)
-            Circle()
-                .fill(color)
-                .frame(width: diameter * 0.34, height: diameter * 0.34)
+                .stroke(color, lineWidth: max(1.5, diameter * 0.11))
+            if let text {
+                Text(text)
+                    .font(.system(size: diameter * 0.40, weight: .black, design: .rounded))
+                    .foregroundStyle(color)
+                    .minimumScaleFactor(0.5)
+                    .lineLimit(1)
+            } else {
+                Circle()
+                    .fill(color)
+                    .frame(width: diameter * 0.34, height: diameter * 0.34)
+            }
         }
         .frame(width: diameter, height: diameter)
     }
 }
 
-/// App logo: brand mark + "AI-Things" wordmark, with the things-connect
-/// attribution. Fits the macOS header and sidebar.
+/// App logo: the things-connect circle (with "AI" inside) + the wordmark.
 struct LogoView: View {
     enum Size {
         case small   // compact
         case regular // header
 
-        var mark: CGFloat { self == .small ? 16 : 20 }
+        var mark: CGFloat { self == .small ? 20 : 26 }
         var word: CGFloat { self == .small ? 14 : 17 }
         var showCaption: Bool { self == .regular }
     }
@@ -35,23 +44,12 @@ struct LogoView: View {
 
     var body: some View {
         HStack(spacing: 9) {
-            BrandMark(diameter: size.mark, color: Theme.highlight)
+            BrandMark(diameter: size.mark, color: Theme.highlight, text: "AI")
 
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 4) {
-                    Text("AI")
-                        .font(Theme.display(size.word - 2, weight: .black))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(
-                            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .fill(Theme.accent)
-                        )
-                    Text("Things")
-                        .font(Theme.display(size.word, weight: .heavy))
-                        .foregroundStyle(Theme.textPrimary)
-                }
+                Text("Things")
+                    .font(Theme.display(size.word, weight: .heavy))
+                    .foregroundStyle(Theme.textPrimary)
                 if size.showCaption {
                     Text("by things-connect.net")
                         .font(Theme.mono(9))
@@ -68,7 +66,7 @@ struct LogoView: View {
     VStack(spacing: 20) {
         LogoView(size: .regular)
         LogoView(size: .small)
-        BrandMark(diameter: 64, color: Theme.highlight)
+        BrandMark(diameter: 72, color: Theme.highlight, text: "AI")
     }
     .padding(40)
     .background(Theme.background)

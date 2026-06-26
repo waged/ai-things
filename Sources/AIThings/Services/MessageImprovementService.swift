@@ -41,32 +41,48 @@ final class MessageImprovementService {
     """
 
     /// Lightweight, dependency-free cleanup used when no provider is set.
+    /// Conservative cleanup that preserves meaning, line breaks, proper nouns
+    /// and code — it tidies rather than rewrites. Leading filler phrases are
+    /// removed, whitespace is normalized, casing/punctuation lightly fixed.
     static func heuristicRewrite(_ text: String) -> String {
-        let fillers = [
-            "i was wondering if you could", "i would like you to", "could you please",
-            "can you please", "i want to", "i need to", "please", "kindly",
-            "if possible", "just", "really", "basically", "actually", "maybe",
-            "i think", "sort of", "kind of", "you know", "for me"
+        // Filler phrases removed only at the start of a line (case-insensitive).
+        let leadFillers = [
+            "i was wondering if you could ", "i would like you to ", "i would like to ",
+            "could you please ", "can you please ", "could you ", "can you ",
+            "i want you to ", "i want to ", "i need you to ", "i need to ",
+            "please ", "kindly ", "i was hoping you could ", "would you mind "
         ]
-        var working = text
-        // Collapse whitespace and newlines.
-        working = working
-            .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
 
-        let lowered = working.lowercased()
-        var stripped = lowered
-        for filler in fillers {
-            stripped = stripped.replacingOccurrences(of: filler + " ", with: "")
+        let lines = text.components(separatedBy: "\n").map { rawLine -> String in
+            // Collapse runs of spaces/tabs; trim ends.
+            var line = rawLine
+                .components(separatedBy: .whitespaces)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            guard !line.isEmpty else { return "" }
+
+            // Strip a leading filler phrase if present.
+            for filler in leadFillers where line.lowercased().hasPrefix(filler) {
+                line = String(line.dropFirst(filler.count))
+                break
+            }
+            guard !line.isEmpty else { return "" }
+
+            // Standalone "i" -> "I".
+            line = line.replacingOccurrences(of: #"\bi\b"#, with: "I", options: .regularExpression)
+
+            // Capitalize the first letter without touching the rest.
+            line = line.prefix(1).uppercased() + line.dropFirst()
+            return line
         }
-        stripped = stripped.trimmingCharacters(in: .whitespaces)
-        guard !stripped.isEmpty else { return working }
 
-        // Capitalize first letter; ensure it reads as an instruction.
-        var result = stripped.prefix(1).uppercased() + stripped.dropFirst()
-        if !result.hasSuffix(".") && !result.hasSuffix("?") {
-            result += "."
+        var result = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !result.isEmpty else { return text }
+
+        // Ensure a single-line instruction ends with punctuation.
+        if !result.contains("\n") {
+            let last = result.last!
+            if !".?!:".contains(last) { result += "." }
         }
         return result
     }

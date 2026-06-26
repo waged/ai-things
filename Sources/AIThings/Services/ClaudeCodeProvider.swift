@@ -28,6 +28,12 @@ final class ClaudeCodeProvider: AIProvider {
     /// Forget the current conversation (e.g. when the project changes).
     func resetSession() { sessionID = nil }
 
+    /// Read/restore the CLI session id so a chat can resume its exact context.
+    var resumeSessionID: String? {
+        get { sessionID }
+        set { sessionID = newValue }
+    }
+
     var hasResolvedCLI: Bool { Self.resolved != nil || resolveCLI() != nil }
 
     // MARK: - Streaming
@@ -212,30 +218,62 @@ final class ClaudeCodeProvider: AIProvider {
     private struct CLI { let binary: String; let path: String }
     private static var resolved: CLI?
 
-    /// Resolve the `claude` binary and the login-shell PATH once, then cache.
+    /// Run a command in a login + interactive shell so BOTH `.zprofile` and
+    /// `.zshrc` apply. A GUI app launched from Finder/Xcode starts with a
+    /// minimal PATH, so a plain `zsh -lc` (login only) misses PATH entries
+    /// that users add in `.zshrc` — which is where `~/.local/bin` often lives.
+    private func shellLines(_ command: String) -> [String] {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        p.arguments = ["-ilc", command]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = Pipe()
+        do { try p.run() } catch { return [] }
+        p.waitUntilExit()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        return String(decoding: data, as: UTF8.self)
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Resolve the `claude` binary and a usable PATH once, then cache.
     private func resolveCLI() -> CLI? {
         if let resolved = Self.resolved { return resolved }
+        let home = NSHomeDirectory()
+        let fm = FileManager.default
 
-        let probe = Process()
-        probe.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        probe.arguments = ["-lc", "echo \"$PATH\"; command -v claude"]
-        let out = Pipe()
-        probe.standardOutput = out
-        probe.standardError = Pipe()
-        do { try probe.run() } catch { return nil }
-        probe.waitUntilExit()
+        // 1) Check well-known install locations directly — works regardless of PATH.
+        let candidates = [
+            "\(home)/.local/bin/claude",
+            "\(home)/.claude/local/claude",
+            "/opt/homebrew/bin/claude",
+            "/usr/local/bin/claude",
+            "\(home)/.bun/bin/claude",
+            "/usr/bin/claude",
+        ]
+        var binary = candidates.first { fm.isExecutableFile(atPath: $0) }
 
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        let lines = String(decoding: data, as: UTF8.self)
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-        guard lines.count >= 2 else { return nil }
+        // 2) Fall back to the login+interactive shell's own resolution.
+        if binary == nil {
+            binary = shellLines("command -v claude").last.flatMap {
+                fm.isExecutableFile(atPath: $0) ? $0 : nil
+            }
+        }
+        guard let bin = binary else { return nil }
 
-        let path = lines[0]
-        let binary = lines[1]
-        guard !binary.isEmpty, FileManager.default.isExecutableFile(atPath: binary) else { return nil }
+        // Build a PATH from the login shell, then guarantee the essentials.
+        var dirs = (shellLines("echo \"$PATH\"").first ?? "")
+            .split(separator: ":").map(String.init)
+        let essentials = [
+            (bin as NSString).deletingLastPathComponent,
+            "\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin",
+            "/usr/bin", "/bin", "/usr/sbin", "/sbin",
+        ]
+        for dir in essentials where !dir.isEmpty && !dirs.contains(dir) { dirs.append(dir) }
 
-        let cli = CLI(binary: binary, path: path)
+        let cli = CLI(binary: bin, path: dirs.joined(separator: ":"))
         Self.resolved = cli
         return cli
     }

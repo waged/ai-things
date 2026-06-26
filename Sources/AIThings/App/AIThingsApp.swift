@@ -10,6 +10,7 @@ struct AIThingsApp: App {
                 .environmentObject(model)
                 .frame(minWidth: 920, minHeight: 600)
                 .preferredColorScheme(.dark)
+                .navigationTitle("") // hide the redundant native window title
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unifiedCompact)

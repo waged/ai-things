@@ -57,9 +57,9 @@ struct SettingsView: View {
                 }
 
                 Section("Default Message Mode") {
-                    Toggle("Make message clearer", isOn: $model.settings.defaultImprovement.makeClearer)
                     Toggle("Ask questions first", isOn: $model.settings.defaultImprovement.askQuestionsFirst)
                     Toggle("Direct mode", isOn: $model.settings.defaultImprovement.directMode)
+                    Toggle("Precise (ultra-concise answers)", isOn: $model.settings.defaultImprovement.precise)
                 }
             }
             .formStyle(.grouped)

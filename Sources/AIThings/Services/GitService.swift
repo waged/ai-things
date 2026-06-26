@@ -48,6 +48,19 @@ final class GitService {
         try await commands.run("git checkout -b \(name.shellQuoted)", in: dir)
     }
 
+    /// Check out an existing branch.
+    func checkout(branch: String, at dir: URL?) async throws -> CommandResult {
+        try await commands.run("git checkout \(branch.shellQuoted)", in: dir)
+    }
+
+    /// Merge `branch` into `base` (checks out base first; leaves you on base).
+    func merge(branch: String, into base: String, at dir: URL?) async throws -> CommandResult {
+        try await commands.run(
+            "git checkout \(base.shellQuoted) && git merge --no-edit \(branch.shellQuoted)",
+            in: dir
+        )
+    }
+
     /// Short status (porcelain) output.
     func status(at dir: URL?) async throws -> CommandResult {
         try await commands.run("git status --short --branch", in: dir)
@@ -61,6 +74,41 @@ final class GitService {
 
     func diff(at dir: URL?) async throws -> CommandResult {
         try await commands.run("git --no-pager diff", in: dir)
+    }
+
+    /// Files with uncommitted changes (staged, unstaged, and untracked).
+    func changedFiles(at dir: URL?) async -> [GitFileChange] {
+        guard let result = try? await commands.run("git status --porcelain", in: dir),
+              result.succeeded else { return [] }
+        return result.standardOutput.split(separator: "\n").compactMap { line in
+            guard line.count >= 4 else { return nil }
+            let code = String(line.prefix(2))
+            var path = String(line.dropFirst(3))
+            if let range = path.range(of: " -> ") { path = String(path[range.upperBound...]) } // renames
+            path = path.trimmingCharacters(in: CharacterSet(charactersIn: "\"")) // quoted paths
+            return GitFileChange(status: code, path: path)
+        }
+    }
+
+    /// Diff for a single file vs HEAD (covers staged + unstaged).
+    func diff(file: String, at dir: URL?) async throws -> CommandResult {
+        try await commands.run("git --no-pager diff HEAD -- \(file.shellQuoted)", in: dir)
+    }
+
+    /// Commits ahead of / behind the upstream branch. `hasUpstream` is false
+    /// when the branch has no tracking remote (so Push/Pull aren't meaningful yet).
+    func aheadBehind(at dir: URL?) async -> (ahead: Int, behind: Int, hasUpstream: Bool) {
+        guard let result = try? await commands.run(
+            "git rev-list --left-right --count @{upstream}...HEAD", in: dir
+        ), result.succeeded else {
+            return (0, 0, false)
+        }
+        // Output is "<behind>\t<ahead>".
+        let numbers = result.standardOutput
+            .split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" })
+            .compactMap { Int($0) }
+        guard numbers.count == 2 else { return (0, 0, false) }
+        return (ahead: numbers[1], behind: numbers[0], hasUpstream: true)
     }
 
     func pull(at dir: URL?) async throws -> CommandResult {

@@ -3,17 +3,19 @@ import SwiftUI
 /// Left sidebar: project, chats (with archive), git branch, tasks, recents.
 struct SidebarView: View {
     @EnvironmentObject private var model: AppModel
-    @Binding var showBranchCreator: Bool
     @State private var showSettings = false
     @State private var showArchived = false
+    @State private var showBranchPicker = false
+    @State private var diffFile: GitFileChange?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 projectSection
+                if model.currentProject != nil { aiSetupSection }
                 chatsSection
                 branchSection
-                quickTasksSection
+                moreSection
                 recentsSection
                 Spacer(minLength: 0)
             }
@@ -50,6 +52,37 @@ struct SidebarView: View {
                     .frame(maxWidth: .infinity)
             }
             .controlSize(.small)
+        }
+    }
+
+    // MARK: - AI setup
+
+    private var aiSetupSection: some View {
+        sidebarSection("AI Setup") {
+            if model.projectInitialized {
+                Label("Initialized for AI", systemImage: "checkmark.seal.fill")
+                    .font(Theme.mono(11))
+                    .foregroundStyle(Theme.success)
+                Button { model.updateProjectDocs() } label: {
+                    Label("Update AI docs", systemImage: "arrow.triangle.2.circlepath").frame(maxWidth: .infinity)
+                }
+                .controlSize(.small)
+                .disabled(model.isStreaming)
+                Text("Refreshes CLAUDE.md & the status / architecture / features docs from the current code.")
+                    .font(Theme.mono(9))
+                    .foregroundStyle(Theme.textSecondary)
+            } else {
+                Button { model.initializeProjectForAI() } label: {
+                    Label("Initialize for AI", systemImage: "sparkles").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .tint(Theme.accent)
+                .disabled(model.isStreaming)
+                Text("Creates CLAUDE.md + status / architecture / features docs and fills them from your code.")
+                    .font(Theme.mono(9))
+                    .foregroundStyle(Theme.textSecondary)
+            }
         }
     }
 
@@ -112,6 +145,22 @@ struct SidebarView: View {
         .buttonStyle(.plain)
         .foregroundStyle(isCurrent ? Theme.textPrimary : Theme.textSecondary)
         .contextMenu {
+            Button { model.forkSession(chat.id) } label: {
+                Label("New Chat from History", systemImage: "arrow.branch")
+            }
+            let targets = model.mergeTargets(for: chat)
+            if !targets.isEmpty {
+                Menu {
+                    ForEach(targets.prefix(6)) { target in
+                        Button(target.title.isEmpty ? "Untitled" : target.title) {
+                            model.mergeSession(chat.id, into: target.id)
+                        }
+                    }
+                } label: {
+                    Label("Merge into…", systemImage: "arrow.triangle.merge")
+                }
+            }
+            Divider()
             if archived {
                 Button { model.unarchiveSession(chat.id) } label: { Label("Unarchive", systemImage: "tray.and.arrow.up") }
             } else {
@@ -130,40 +179,70 @@ struct SidebarView: View {
                     .font(Theme.mono(12))
                     .foregroundStyle(Theme.highlight)
                 if model.hasUncommittedChanges {
-                    Text("Uncommitted changes")
+                    Text("Uncommitted changes (\(model.changedFiles.count))")
                         .font(Theme.mono(10))
                         .foregroundStyle(Theme.warning)
+                    ForEach(model.changedFiles) { file in
+                        changedFileRow(file)
+                    }
                 }
             } else {
                 Text(model.isGitRepo ? "Detached HEAD" : "Not a git repository")
                     .font(Theme.mono(11))
                     .foregroundStyle(Theme.textSecondary)
             }
-            Button {
-                showBranchCreator = true
-            } label: {
-                Label("New Branch", systemImage: "plus")
-                    .frame(maxWidth: .infinity)
+
+            if model.isGitRepo {
+                Button { showBranchPicker.toggle() } label: {
+                    Label("Switch branch", systemImage: "arrow.triangle.branch")
+                        .frame(maxWidth: .infinity)
+                }
+                .controlSize(.small)
+                .popover(isPresented: $showBranchPicker, arrowEdge: .trailing) {
+                    BranchSwitcherView().environmentObject(model)
+                }
             }
-            .controlSize(.small)
-            .disabled(model.currentProject == nil)
+        }
+        .sheet(item: $diffFile) { file in
+            DiffViewerView(file: file).environmentObject(model)
         }
     }
 
-    // MARK: - Quick tasks
-
-    private var quickTasksSection: some View {
-        sidebarSection("Tasks") {
-            Button { model.startFeatureTask() } label: {
-                Label("Feature Request", systemImage: "sparkles").frame(maxWidth: .infinity, alignment: .leading)
+    private func changedFileRow(_ file: GitFileChange) -> some View {
+        Button {
+            diffFile = file
+        } label: {
+            HStack(spacing: 7) {
+                Text(file.badge)
+                    .font(Theme.mono(9, weight: .bold))
+                    .foregroundStyle(statusColor(file))
+                    .frame(width: 14, height: 14)
+                    .background(statusColor(file).opacity(0.16))
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+                Text(file.name)
+                    .font(Theme.mono(10.5))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain).foregroundStyle(Theme.textPrimary)
+        }
+        .buttonStyle(.plain)
+        .help(file.path)
+    }
 
-            Button { model.startBugTask() } label: {
-                Label("Bug Fix", systemImage: "ant").frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.plain).foregroundStyle(Theme.textPrimary)
+    private func statusColor(_ file: GitFileChange) -> Color {
+        switch file.badge {
+        case "A", "U": return Theme.success
+        case "D":      return Theme.danger
+        case "R":      return Theme.highlight
+        default:        return Theme.warning
+        }
+    }
 
+    // MARK: - More
+
+    private var moreSection: some View {
+        sidebarSection("More") {
             Button { showSettings = true } label: {
                 Label("Settings", systemImage: "gearshape").frame(maxWidth: .infinity, alignment: .leading)
             }

@@ -13,7 +13,7 @@ struct MainAppView: View {
             Divider().overlay(Theme.border)
 
             NavigationSplitView {
-                SidebarView(showBranchCreator: $showBranchCreator)
+                SidebarView()
                     .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 320)
             } detail: {
                 VStack(spacing: 0) {
@@ -27,6 +27,7 @@ struct MainAppView: View {
             .navigationSplitViewStyle(.balanced)
         }
         .background(Theme.backgroundGradient)
+        .background(WindowAccessor())
         .sheet(isPresented: $showSettings) {
             SettingsView()
                 .environmentObject(model)

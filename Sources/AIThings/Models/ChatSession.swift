@@ -9,6 +9,8 @@ struct ChatSession: Identifiable, Codable, Equatable {
     var createdAt: Date
     var updatedAt: Date
     var isArchived: Bool
+    /// The Claude Code CLI session id, so reopening this chat resumes its context.
+    var claudeSessionID: String?
 
     init(
         id: UUID = UUID(),
@@ -17,7 +19,8 @@ struct ChatSession: Identifiable, Codable, Equatable {
         projectPath: String? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
-        isArchived: Bool = false
+        isArchived: Bool = false,
+        claudeSessionID: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -26,6 +29,7 @@ struct ChatSession: Identifiable, Codable, Equatable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.isArchived = isArchived
+        self.claudeSessionID = claudeSessionID
     }
 
     /// First non-empty user message, used to auto-name a chat.

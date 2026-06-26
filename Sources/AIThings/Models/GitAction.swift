@@ -52,7 +52,7 @@ enum GitAction: String, CaseIterable, Identifiable {
     /// Destructive actions always require explicit confirmation.
     var isDestructive: Bool {
         switch self {
-        case .discardChanges, .push: return true
+        case .discardChanges: return true
         default: return false
         }
     }
