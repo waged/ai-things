@@ -8,7 +8,7 @@ struct MainAppView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HeaderBarView(showSettings: $showSettings)
+            HeaderBarView()
 
             Divider().overlay(Theme.border)
 
@@ -30,6 +30,13 @@ struct MainAppView: View {
         }
         .background(Theme.backgroundGradient)
         .background(WindowAccessor())
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) { FeedbackMenu() }
+            ToolbarItem(placement: .primaryAction) {
+                Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                    .help("Settings")
+            }
+        }
         .sheet(isPresented: $showSettings) {
             SettingsView()
                 .environmentObject(model)

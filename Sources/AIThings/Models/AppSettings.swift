@@ -27,6 +27,13 @@ enum AIProviderKind: String, Codable, CaseIterable, Identifiable {
     var isImplemented: Bool { self == .claudeCode || self == .mock }
 }
 
+/// Which semantic-version component the "Bump version" step increments.
+enum VersionBump: String, Codable, CaseIterable, Identifiable {
+    case major, minor, patch
+    var id: String { rawValue }
+    var label: String { rawValue.capitalized }
+}
+
 /// Persisted application preferences.
 struct AppSettings: Codable, Equatable {
     var providerKind: AIProviderKind = .claudeCode
@@ -58,6 +65,8 @@ struct AppSettings: Codable, Equatable {
     var releaseBranch: String = ""
     /// Rules the "Review" automation step checks the change against. Editable.
     var reviewRules: String = AppSettings.defaultReviewRules
+    /// Which version component the "Bump version" step increments.
+    var versionBump: VersionBump = .patch
 
     static let defaultReviewRules = """
     - Follow MVVM: keep views declarative; put logic in the view model, not the view.
@@ -74,7 +83,7 @@ struct AppSettings: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case providerKind, modelName, customEndpoint, skipPermissions, autoApplyTrustedChanges
         case defaultImprovement, confirmDestructiveActions, mockStreamDelay
-        case automationEnabled, automationSteps, releaseBranch, reviewRules
+        case automationEnabled, automationSteps, releaseBranch, reviewRules, versionBump
     }
 
     init(from decoder: Decoder) throws {
@@ -90,6 +99,7 @@ struct AppSettings: Codable, Equatable {
         automationEnabled = (try? c.decode(Bool.self, forKey: .automationEnabled)) ?? false
         releaseBranch = (try? c.decode(String.self, forKey: .releaseBranch)) ?? ""
         reviewRules = (try? c.decode(String.self, forKey: .reviewRules)) ?? AppSettings.defaultReviewRules
+        versionBump = (try? c.decode(VersionBump.self, forKey: .versionBump)) ?? .patch
         let saved = (try? c.decode([AutomationStep].self, forKey: .automationSteps)) ?? []
         // Always present steps in the canonical pipeline order (review → test →
         // … → commit → merge&push), carrying over the user's enabled choices.

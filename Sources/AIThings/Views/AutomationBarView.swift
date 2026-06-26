@@ -118,51 +118,28 @@ struct AutomationBarView: View {
     private var stepGrid: some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach($model.settings.automationSteps) { $step in
-                HStack(spacing: 8) {
-                    statusDot(step.kind)
-                    Toggle(isOn: $step.enabled) {
-                        Label(step.kind.title, systemImage: step.kind.symbol)
-                    }
-                    .toggleStyle(VividToggleStyle())
-                    .disabled(!model.settings.automationEnabled)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        statusDot(step.kind)
+                        Toggle(isOn: $step.enabled) {
+                            Label(step.kind.title, systemImage: step.kind.symbol)
+                        }
+                        .toggleStyle(VividToggleStyle())
+                        .disabled(!model.settings.automationEnabled)
 
-                    Text(step.kind.detail)
-                        .font(Theme.mono(9.5))
-                        .foregroundStyle(Theme.textSecondary)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
+                        Text(step.kind.detail)
+                            .font(Theme.mono(9.5))
+                            .foregroundStyle(Theme.textSecondary)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+
+                    // Per-step config, inline right under its own row.
+                    if step.kind == .review && step.enabled { reviewChecklist }
+                    if step.kind == .bumpVersion && step.enabled { versionBumpField }
+                    if step.kind == .mergeAndPush && step.enabled { mergeTargetField }
                 }
                 .opacity(model.settings.automationEnabled ? 1 : 0.5)
-            }
-            if reviewEnabled {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark.shield").foregroundStyle(Theme.highlight)
-                        Text("Review checklist (the Review step checks these):")
-                            .font(Theme.mono(10)).foregroundStyle(Theme.textSecondary)
-                    }
-                    TextEditor(text: $model.settings.reviewRules)
-                        .font(Theme.mono(10.5))
-                        .scrollContentBackground(.hidden)
-                        .frame(height: 96)
-                        .padding(6)
-                        .background(Theme.surfaceElevated)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
-                }
-                .padding(.top, 4)
-            }
-
-            if mergeEnabled {
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.triangle.merge").foregroundStyle(Theme.highlight)
-                    Text("Merge target:").font(Theme.mono(10)).foregroundStyle(Theme.textSecondary)
-                    TextField("auto (main / master)", text: $model.settings.releaseBranch)
-                        .textFieldStyle(.roundedBorder)
-                        .font(Theme.mono(11))
-                        .frame(maxWidth: 220)
-                }
-                .padding(.top, 2)
             }
 
             Text("Steps run in order as agent turns after each task you send.")
@@ -172,12 +149,47 @@ struct AutomationBarView: View {
         }
     }
 
-    private var mergeEnabled: Bool {
-        model.settings.automationSteps.first(where: { $0.kind == .mergeAndPush })?.enabled ?? false
+    private var reviewChecklist: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Checklist — the Review gate checks these:")
+                .font(Theme.mono(9.5)).foregroundStyle(Theme.textSecondary)
+            TextEditor(text: $model.settings.reviewRules)
+                .font(Theme.mono(10.5))
+                .scrollContentBackground(.hidden)
+                .frame(height: 96)
+                .padding(6)
+                .background(Theme.surfaceElevated)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+        }
+        .padding(.leading, 22) // indent under the Review row
+        .padding(.bottom, 4)
     }
 
-    private var reviewEnabled: Bool {
-        model.settings.automationSteps.first(where: { $0.kind == .review })?.enabled ?? false
+    private var versionBumpField: some View {
+        HStack(spacing: 8) {
+            Text("Increment:").font(Theme.mono(9.5)).foregroundStyle(Theme.textSecondary)
+            Picker("", selection: $model.settings.versionBump) {
+                ForEach(VersionBump.allCases) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 240)
+        }
+        .padding(.leading, 22)
+        .padding(.bottom, 4)
+    }
+
+    private var mergeTargetField: some View {
+        HStack(spacing: 6) {
+            Text("Target branch:").font(Theme.mono(9.5)).foregroundStyle(Theme.textSecondary)
+            TextField("auto (main / master)", text: $model.settings.releaseBranch)
+                .textFieldStyle(.roundedBorder)
+                .font(Theme.mono(11))
+                .frame(maxWidth: 220)
+        }
+        .padding(.leading, 22)
+        .padding(.bottom, 4)
     }
 
     @ViewBuilder

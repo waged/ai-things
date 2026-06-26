@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// Top header: logo, project name, git branch, status indicator, settings.
+/// Top header: logo, project name, git branch, status indicator, new chat.
+/// (Feedback + Settings live in the window's top-right toolbar.)
 struct HeaderBarView: View {
     @EnvironmentObject private var model: AppModel
-    @Binding var showSettings: Bool
 
     var body: some View {
         HStack(spacing: 14) {
@@ -36,15 +36,6 @@ struct HeaderBarView: View {
             .buttonStyle(.plain)
             .foregroundStyle(Theme.textSecondary)
             .help("New chat")
-
-            Button {
-                showSettings = true
-            } label: {
-                Image(systemName: "gearshape")
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(Theme.textSecondary)
-            .help("Settings")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
