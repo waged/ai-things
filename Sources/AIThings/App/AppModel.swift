@@ -40,7 +40,12 @@ final class AppModel: ObservableObject {
     @Published var pendingAttachments: [UserAttachment] = []
     @Published var draft: String = ""
 
-    @Published var isStreaming = false
+    /// The session whose turn is currently streaming (nil = none). A turn is
+    /// bound to the chat it started in, so its output never leaks into another
+    /// chat the user opens while it runs.
+    @Published private(set) var streamingSessionID: UUID?
+    /// True only when the chat currently on screen is the one streaming.
+    var isStreaming: Bool { streamingSessionID != nil && streamingSessionID == session.id }
     @Published var statusText = "Idle"
 
     /// Flipped to request the composer take focus (observed by the view).
@@ -65,10 +70,17 @@ final class AppModel: ObservableObject {
 
     // MARK: - Routing (Pillar 1)
 
-    /// A suggestion that the pending message belongs in a different chat.
-    struct RouteSuggestion: Equatable { let chatId: UUID; let title: String }
-    @Published var pendingRoute: RouteSuggestion?
+    /// A suggestion (from the fast-model router on send) that the message
+    /// belongs somewhere other than the current chat.
+    enum RouteSuggestion: Equatable {
+        case existing(chatId: UUID, title: String) // a different chat fits this better
+        case newTopic                              // a different topic from this chat
+    }
+    @Published var routeHint: RouteSuggestion?
+    /// True while the router is deciding (between hitting Send and dispatch).
+    @Published var isRouting = false
     private var pendingMessage: (text: String, attachments: [UserAttachment])?
+    private var routeTask: Task<Void, Never>?
 
     // MARK: - Init
 
@@ -137,9 +149,15 @@ final class AppModel: ObservableObject {
         claudeProvider?.resumeSessionID = session.claudeSessionID
     }
 
-    /// Remember the CLI session id on the current chat after a reply.
-    private func captureClaudeSession() {
-        if let id = claudeProvider?.resumeSessionID { session.claudeSessionID = id }
+    /// Remember the CLI session id on the chat that owned this turn (which may no
+    /// longer be the one on screen).
+    private func captureClaudeSession(to sid: UUID) {
+        guard let id = claudeProvider?.resumeSessionID else { return }
+        if session.id == sid {
+            session.claudeSessionID = id
+        } else if let i = sessions.firstIndex(where: { $0.id == sid }) {
+            sessions[i].claudeSessionID = id
+        }
     }
 
     // MARK: - Project handling
@@ -225,18 +243,20 @@ final class AppModel: ObservableObject {
 
     /// Shared driver for the docs init/update turns.
     private func runDocsTask(userLabel: String, prompt: String) {
+        let sid = session.id
+        streamTask?.cancel()
         streamTask = Task {
-            appendMessage(ChatMessage(role: .user, text: userLabel))
+            appendMessage(ChatMessage(role: .user, text: userLabel), to: sid)
             let context = await currentContext()
             let request = AIRequest(
                 systemPrompt: aiService.systemPrompt(improvement: improvement, context: context,
                                                      autoApply: settings.autoApplyTrustedChanges),
-                history: session.messages,
+                history: messages(of: sid),
                 userMessage: prompt,
                 context: context,
                 appendSystemPrompt: behaviorDirectives()
             )
-            await streamAssistant(request)
+            await streamAssistant(request, in: sid)
         }
     }
 
@@ -410,16 +430,48 @@ final class AppModel: ObservableObject {
     // MARK: - Sending messages
 
     func send() {
+        guard !isRouting else { return } // already deciding; ignore double-send
         let raw = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty || !pendingAttachments.isEmpty else { return }
 
-        // Look back: does this message belong in a different existing chat?
-        if !raw.isEmpty, let suggestion = routeSuggestion(for: raw) {
-            pendingMessage = (raw, pendingAttachments)
-            pendingRoute = suggestion
-            return // wait for the user's one-click choice (banner in the composer)
+        // Routing only makes sense for real text when there's somewhere else it
+        // could go: another chat to move to, or an established topic to leave.
+        let others = sessions.filter {
+            $0.id != session.id && !$0.isArchived && belongsToCurrentProject($0)
+                && $0.messages.contains { $0.role == .user }
         }
-        dispatchSend(raw, attachments: pendingAttachments)
+        let currentHasTopic = session.messages.contains { $0.role == .user }
+        guard !raw.isEmpty, currentHasTopic || !others.isEmpty,
+              let claude = aiService.provider as? ClaudeCodeProvider, claude.hasResolvedCLI else {
+            dispatchSend(raw, attachments: pendingAttachments)
+            return
+        }
+
+        let attachments = pendingAttachments
+        pendingMessage = (raw, attachments)
+        isRouting = true
+        let currentTopic = currentHasTopic ? topicText(of: session) : ""
+        let candidateTopics = others.map { topicText(of: $0) }
+        routeTask = Task {
+            let result = await claude.classifyRoute(message: raw, currentTopic: currentTopic, others: candidateTopics)
+            finishRouting(result, others: others)
+        }
+    }
+
+    /// Apply the router's verdict: show a banner to confirm a move/new-chat, or
+    /// just send in place for "keep" (and on any failure).
+    private func finishRouting(_ result: (decision: String, chat: Int)?, others: [ChatSession]) {
+        isRouting = false
+        guard pendingMessage != nil else { return } // canceled/superseded
+        switch result?.decision {
+        case "move" where result.map({ others.indices.contains($0.chat) }) == true:
+            let target = others[result!.chat]
+            routeHint = .existing(chatId: target.id, title: target.title)
+        case "new":
+            routeHint = .newTopic
+        default:
+            dispatchSendPending()
+        }
     }
 
     private func dispatchSend(_ raw: String, attachments: [UserAttachment]) {
@@ -427,24 +479,27 @@ final class AppModel: ObservableObject {
         pendingAttachments = []
         if !raw.isEmpty { inputHistory.append(raw) }
         session.lastOpenedAt = Date() // prompting marks this as the last-used chat
-        streamTask = Task { await runTurn(raw, attachments: attachments) }
+        let sid = session.id
+        streamTask?.cancel() // one active turn at a time; the prior turn keeps its own chat
+        streamTask = Task { await runTurn(raw, attachments: attachments, in: sid) }
     }
 
     // MARK: - Route resolution (from the suggestion banner)
 
+    /// Move the held message into the suggested existing chat.
     func routeMoveToTarget() {
-        guard let pm = pendingMessage, let target = pendingRoute?.chatId else { return }
+        guard let pm = pendingMessage, case let .existing(chatId, _) = routeHint else { return }
         clearPendingRoute()
-        selectSession(target)
+        selectSession(chatId)
         dispatchSend(pm.text, attachments: pm.attachments)
     }
 
+    /// Send the held message in the current chat anyway.
     func routeKeepHere() {
-        guard let pm = pendingMessage else { clearPendingRoute(); return }
-        clearPendingRoute()
-        dispatchSend(pm.text, attachments: pm.attachments)
+        clearPendingRoute(send: true)
     }
 
+    /// Send the held message into a fresh chat.
     func routeToNewChat() {
         guard let pm = pendingMessage else { clearPendingRoute(); return }
         clearPendingRoute()
@@ -452,26 +507,18 @@ final class AppModel: ObservableObject {
         dispatchSend(pm.text, attachments: pm.attachments)
     }
 
-    private func clearPendingRoute() { pendingRoute = nil; pendingMessage = nil }
+    /// Send the message currently held by the router (no chat switch).
+    private func dispatchSendPending() {
+        guard let pm = pendingMessage else { return }
+        pendingMessage = nil
+        dispatchSend(pm.text, attachments: pm.attachments)
+    }
 
-    /// Suggest another chat only when the message clearly fits it better than
-    /// the current one (and clears a confidence bar). Returns nil to send here.
-    private func routeSuggestion(for message: String) -> RouteSuggestion? {
-        let candidates = sessions.filter {
-            $0.id != session.id && !$0.isArchived && belongsToCurrentProject($0)
-                && $0.messages.contains { $0.role == .user }
-        }
-        guard !candidates.isEmpty else { return nil }
-
-        let currentScore = session.messages.contains { $0.role == .user }
-            ? matcher.similarity(message, topicText(of: session)) : 0
-        var best: (chat: ChatSession, score: Double)?
-        for c in candidates {
-            let score = matcher.similarity(message, topicText(of: c))
-            if best == nil || score > best!.score { best = (c, score) }
-        }
-        guard let best, best.score >= 0.62, best.score > currentScore + 0.08 else { return nil }
-        return RouteSuggestion(chatId: best.chat.id, title: best.chat.title)
+    private func clearPendingRoute(send: Bool = false) {
+        routeHint = nil
+        guard let pm = pendingMessage else { return }
+        pendingMessage = nil
+        if send { dispatchSend(pm.text, attachments: pm.attachments) }
     }
 
     /// Representative text for a chat: title + its recent user messages.
@@ -535,9 +582,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func runTurn(_ raw: String, attachments: [UserAttachment]) async {
+    private func runTurn(_ raw: String, attachments: [UserAttachment], in sid: UUID) async {
         let messageText = raw
-        appendMessage(ChatMessage(role: .user, text: messageText, attachments: attachments))
+        appendMessage(ChatMessage(role: .user, text: messageText, attachments: attachments), to: sid)
 
         // Feature/Bug mode: when starting from the base branch, auto-create a
         // branch named from the user's text. (The mode itself stays on and keeps
@@ -554,14 +601,14 @@ final class AppModel: ObservableObject {
         let request = AIRequest(
             systemPrompt: aiService.systemPrompt(improvement: improvement, context: context,
                                                  autoApply: settings.autoApplyTrustedChanges),
-            history: session.messages,
+            history: messages(of: sid),
             userMessage: promptForAI,
             context: context,
             appendSystemPrompt: behaviorDirectives()
         )
-        await streamAssistant(request)
+        await streamAssistant(request, in: sid)
 
-        if settings.automationEnabled { await runPipeline() }
+        if settings.automationEnabled { await runPipeline(in: sid) }
     }
 
     // MARK: - Automation pipeline
@@ -570,7 +617,7 @@ final class AppModel: ObservableObject {
     @Published var stepStatus: [AutomationStep.Kind: StepState] = [:]
 
     /// Run the enabled post-task steps in order, each as a Claude follow-up turn.
-    private func runPipeline() async {
+    private func runPipeline(in sid: UUID) async {
         let steps = settings.automationSteps.filter(\.enabled)
         guard !steps.isEmpty else { return }
 
@@ -578,7 +625,7 @@ final class AppModel: ObservableObject {
         for step in steps {
             if Task.isCancelled { break }
             stepStatus[step.kind] = .running
-            appendSystem("▶︎ Automation — \(step.kind.title)")
+            appendSystem("▶︎ Automation — \(step.kind.title)", to: sid)
 
             if step.kind.isGating {
                 // Gate: verify → fix → re-verify, up to maxAttempts. If it still
@@ -588,8 +635,8 @@ final class AppModel: ObservableObject {
                 var attempt = 1
                 while attempt <= maxAttempts {
                     if Task.isCancelled { break }
-                    if attempt > 1 { appendSystem("↻ \(step.kind.title) — retry \(attempt)/\(maxAttempts)") }
-                    let reply = await runStep(step.kind)
+                    if attempt > 1 { appendSystem("↻ \(step.kind.title) — retry \(attempt)/\(maxAttempts)", to: sid) }
+                    let reply = await runStep(step.kind, in: sid)
                     if !verdictFailed(reply) { passed = true; break }
                     attempt += 1
                 }
@@ -598,11 +645,11 @@ final class AppModel: ObservableObject {
                 } else {
                     stepStatus[step.kind] = .failed
                     appendMessage(ChatMessage(role: .system, kind: .errorOutput,
-                        text: "⛔ Automation stopped: \(step.kind.title) didn't pass after \(maxAttempts) attempts. Remaining steps (incl. commit/merge) were skipped — fix it, then run again."))
+                        text: "⛔ Automation stopped: \(step.kind.title) didn't pass after \(maxAttempts) attempts. Remaining steps (incl. commit/merge) were skipped — fix it, then run again."), to: sid)
                     break
                 }
             } else {
-                await runStep(step.kind)
+                await runStep(step.kind, in: sid)
                 stepStatus[step.kind] = .done
             }
         }
@@ -615,18 +662,18 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult
-    private func runStep(_ kind: AutomationStep.Kind) async -> String {
+    private func runStep(_ kind: AutomationStep.Kind, in sid: UUID) async -> String {
         let context = await currentContext()
         let request = AIRequest(
             systemPrompt: aiService.systemPrompt(improvement: improvement, context: context,
                                                  autoApply: settings.autoApplyTrustedChanges),
-            history: session.messages,
+            history: messages(of: sid),
             userMessage: stepPrompt(for: kind),
             context: context,
             appendSystemPrompt: behaviorDirectives()
         )
-        await streamAssistant(request)
-        return session.messages.last(where: { $0.role == .assistant })?.text ?? ""
+        await streamAssistant(request, in: sid)
+        return messages(of: sid).last(where: { $0.role == .assistant })?.text ?? ""
     }
 
     /// A gating step reports failure by ending with the STATUS: FAIL marker.
@@ -669,36 +716,37 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func streamAssistant(_ request: AIRequest) async {
-        isStreaming = true
-        statusText = "Thinking…"
+    private func streamAssistant(_ request: AIRequest, in sid: UUID) async {
+        streamingSessionID = sid
+        if sid == session.id { statusText = "Thinking…" }
         defer {
-            isStreaming = false
-            statusText = isGitRepo ? "Connected" : "Idle"
-            captureClaudeSession()
+            // Only clear if we still own the streaming slot (a newer turn may have claimed it).
+            if streamingSessionID == sid { streamingSessionID = nil }
+            if sid == session.id { statusText = isGitRepo ? "Connected" : "Idle" }
+            captureClaudeSession(to: sid)
             persist()
             Task { await refreshGit() } // reflect any edits/commits the AI made
         }
 
         var assistant = ChatMessage(role: .assistant, text: "")
-        appendMessage(assistant)
+        appendMessage(assistant, to: sid)
         let id = assistant.id
 
         do {
             for try await chunk in aiService.stream(request) {
                 if Task.isCancelled { break }
                 assistant.text += chunk
-                updateMessage(id: id, text: assistant.text)
+                updateMessage(id: id, text: assistant.text, in: sid)
             }
         } catch {
             appendMessage(ChatMessage(role: .assistant, kind: .errorOutput,
-                                      text: "Error: \(error.localizedDescription)"))
+                                      text: "Error: \(error.localizedDescription)"), to: sid)
         }
     }
 
     func cancelStreaming() {
         streamTask?.cancel()
-        isStreaming = false
+        streamingSessionID = nil
         statusText = "Cancelled"
     }
 
@@ -719,10 +767,26 @@ final class AppModel: ObservableObject {
     /// Concise behavior directives derived from the composer toggles. Passed to
     /// the Claude Code CLI via --append-system-prompt.
     private func behaviorDirectives() -> String {
-        var d = ["Respond in short, scannable bullet points.", "Focus on the software task."]
-        if improvement.directMode {
-            d.append("Be concise; minimal prose; prioritize concrete code changes and commands.")
+        var d: [String] = []
+
+        // PRECISE dominates: put it first and make it a hard constraint so the
+        // model doesn't fall back to its normal verbose style.
+        if improvement.precise {
+            d.append("""
+            ### OUTPUT STYLE: PRECISE (HARD RULES — these override your default style)
+            - Maximum 4 lines total in the reply. Prefer 1.
+            - Each line ≤ 12 words. Telegraphic: drop articles/filler; grammar is optional.
+            - NO preamble, NO "Here is/I'll/Let me", NO restating the request, NO summary of what you did, NO closing remarks, NO headings.
+            - Output ONLY the essential answer: a value, a file path, a command, or a minimal code snippet.
+            - If one word or one line answers it, stop there. Explain ONLY if explicitly asked.
+            """)
+        } else {
+            d.append("Respond in short, scannable bullet points. Focus on the software task.")
+            if improvement.directMode {
+                d.append("Be concise; minimal prose; prioritize concrete code changes and commands.")
+            }
         }
+
         if improvement.askQuestionsFirst {
             d.append("If the request is ambiguous, ask brief clarifying questions before editing files.")
         }
@@ -734,12 +798,9 @@ final class AppModel: ObservableObject {
         case .none:
             break
         }
-        if improvement.precise {
-            d.append("PRECISE MODE: answer as briefly as humanly possible. Terse fragments and bullets, no pleasantries, no preamble, no recap. Sacrifice grammar and full sentences for brevity. Prefer code, paths, and commands over prose. If a one-word answer suffices, give one word.")
-        }
         // Keep the project's living docs current (the user relies on these).
         d.append("When you make meaningful changes, update CLAUDE.md (idea, status, conventions) and .aithings/status.html (status & progress log) to reflect them.")
-        return d.joined(separator: " ")
+        return d.joined(separator: "\n")
     }
 
     /// Replace inline attachment tokens with concrete file paths for the AI,
@@ -1069,6 +1130,38 @@ final class AppModel: ObservableObject {
     private func updateMessage(id: UUID, text: String) {
         guard let index = session.messages.firstIndex(where: { $0.id == id }) else { return }
         session.messages[index].text = text
+    }
+
+    // MARK: Session-bound writes (used by the streaming turn, which must keep
+    // writing to the chat it started in even if the user opens another one).
+
+    /// The live messages of `sid` — the on-screen working copy if it's active,
+    /// otherwise its persisted copy in `sessions`.
+    private func messages(of sid: UUID) -> [ChatMessage] {
+        session.id == sid ? session.messages : (sessions.first { $0.id == sid }?.messages ?? [])
+    }
+
+    private func appendSystem(_ text: String, to sid: UUID) {
+        appendMessage(ChatMessage(role: .system, kind: .system, text: text), to: sid)
+    }
+
+    private func appendMessage(_ message: ChatMessage, to sid: UUID) {
+        if session.id == sid {
+            session.messages.append(message)
+        } else if let i = sessions.firstIndex(where: { $0.id == sid }) {
+            sessions[i].messages.append(message)
+        }
+    }
+
+    private func updateMessage(id: UUID, text: String, in sid: UUID) {
+        if session.id == sid {
+            if let mi = session.messages.firstIndex(where: { $0.id == id }) {
+                session.messages[mi].text = text
+            }
+        } else if let si = sessions.firstIndex(where: { $0.id == sid }),
+                  let mi = sessions[si].messages.firstIndex(where: { $0.id == id }) {
+            sessions[si].messages[mi].text = text
+        }
     }
 
     private func updatePlanStatus(messageID: UUID, status: AssistantPlan.Status) {

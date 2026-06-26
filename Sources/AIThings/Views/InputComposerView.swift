@@ -12,7 +12,7 @@ struct InputComposerView: View {
         VStack(alignment: .leading, spacing: 8) {
             togglesRow
 
-            if let route = model.pendingRoute {
+            if let route = model.routeHint {
                 routeBanner(route)
             }
 
@@ -47,18 +47,29 @@ struct InputComposerView: View {
 
     // MARK: - Route suggestion
 
+    @ViewBuilder
     private func routeBanner(_ route: AppModel.RouteSuggestion) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "arrow.triangle.branch").foregroundStyle(Theme.highlight)
-            Text("This looks related to ")
-                .foregroundStyle(Theme.textSecondary)
-            + Text("“\(route.title)”").foregroundStyle(Theme.textPrimary)
-            Spacer(minLength: 8)
-            Button("Move there") { model.routeMoveToTarget() }
-                .buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.accent)
+
+            switch route {
+            case let .existing(_, title):
+                (Text("This looks related to ").foregroundStyle(Theme.textSecondary)
+                    + Text("“\(title)”").foregroundStyle(Theme.textPrimary))
+                Spacer(minLength: 8)
+                Button("Move there") { model.routeMoveToTarget() }
+                    .buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.accent)
+                Button("New chat") { model.routeToNewChat() }
+                    .buttonStyle(.bordered).controlSize(.small)
+            case .newTopic:
+                Text("This seems like a new topic for this chat.")
+                    .foregroundStyle(Theme.textSecondary)
+                Spacer(minLength: 8)
+                Button("Start new chat") { model.routeToNewChat() }
+                    .buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.accent)
+            }
+
             Button("Keep here") { model.routeKeepHere() }
-                .buttonStyle(.bordered).controlSize(.small)
-            Button("New chat") { model.routeToNewChat() }
                 .buttonStyle(.bordered).controlSize(.small)
         }
         .font(Theme.mono(11))
@@ -192,12 +203,19 @@ struct InputComposerView: View {
             Button {
                 send()
             } label: {
-                Label("Send", systemImage: "paperplane.fill")
+                if model.isRouting {
+                    HStack(spacing: 5) {
+                        ProgressView().controlSize(.mini)
+                        Text("Checking…")
+                    }
+                } else {
+                    Label("Send", systemImage: "paperplane.fill")
+                }
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
             .tint(Theme.accent)
-            .disabled(model.isStreaming)
+            .disabled(model.isStreaming || model.isRouting)
             .keyboardShortcut(.return, modifiers: .command)
         }
     }

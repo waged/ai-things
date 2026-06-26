@@ -79,6 +79,67 @@ final class ClaudeCodeProvider: AIProvider {
         return raw.map(Self.sanitizeRewrite)
     }
 
+    /// Route a new message to the right chat using a fast model. Returns the
+    /// decision ("keep" | "move" | "new") and, for "move", the index into
+    /// `others`. Returns nil on failure so the caller can just send in place.
+    /// No project context, no session, no tools.
+    func classifyRoute(message: String, currentTopic: String, others: [String]) async -> (decision: String, chat: Int)? {
+        guard let cli = resolveCLI() else { return nil }
+        let list = others.isEmpty ? "(none)"
+            : others.enumerated().map { "[\($0.offset)] \($0.element)" }.joined(separator: "\n")
+        let prompt = """
+        You route a NEW MESSAGE to the right chat thread in a coding assistant. Decide whether it belongs in the CURRENT chat, in one of the OTHER chats, or in a brand-new chat.
+
+        Rules:
+        - Prefer "keep". Only choose otherwise when the topic clearly differs.
+        - "move": exactly one OTHER chat is a clearly better fit (same feature/area of the codebase).
+        - "new": the message is a different topic/feature from the CURRENT chat AND none of the others fit.
+        - Judge by topic/feature/intent, not by surface wording. Follow-ups, fixes, and refinements of the current work are "keep".
+
+        Output ONLY one line of JSON, nothing else:
+        {"decision":"keep|move|new","chat":<OTHER index, or -1>}
+
+        CURRENT chat topic:
+        \(currentTopic.isEmpty ? "(empty / brand-new chat)" : currentTopic)
+
+        OTHER chats:
+        \(list)
+
+        NEW MESSAGE:
+        \(message)
+        """
+        let raw: String? = await withCheckedContinuation { continuation in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: cli.binary)
+            process.arguments = ["-p", prompt, "--output-format", "text", "--model", "haiku"]
+            var env = ProcessInfo.processInfo.environment
+            env["PATH"] = cli.path
+            process.environment = env
+            let out = Pipe()
+            process.standardOutput = out
+            process.standardError = Pipe()
+            process.terminationHandler = { proc in
+                let data = out.fileHandleForReading.readDataToEndOfFile()
+                let result = String(decoding: data, as: UTF8.self)
+                continuation.resume(returning: proc.terminationStatus == 0 ? result : nil)
+            }
+            do { try process.run() } catch { continuation.resume(returning: nil) }
+        }
+        return raw.flatMap(Self.parseRoute)
+    }
+
+    /// Pull `{"decision":...,"chat":...}` out of the model's reply.
+    private static func parseRoute(_ text: String) -> (decision: String, chat: Int)? {
+        guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"),
+              start < end,
+              let data = String(text[start...end]).data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let decision = obj["decision"] as? String else { return nil }
+        let chat = (obj["chat"] as? Int) ?? Int(obj["chat"] as? String ?? "") ?? -1
+        let valid = ["keep", "move", "new"]
+        return valid.contains(decision) ? (decision, chat) : nil
+    }
+
     /// Strip wrappers Haiku sometimes adds despite instructions (surrounding
     /// quotes, a "Rewritten:"-style lead-in).
     private static func sanitizeRewrite(_ text: String) -> String {

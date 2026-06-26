@@ -37,6 +37,10 @@ struct MainAppView: View {
                     .help("Settings")
             }
         }
+        // Tint the native window toolbar to the app navy so the top strip
+        // doesn't render as a black system material above the header.
+        .toolbarBackground(Theme.surface, for: .windowToolbar)
+        .toolbarBackground(.visible, for: .windowToolbar)
         .sheet(isPresented: $showSettings) {
             SettingsView()
                 .environmentObject(model)
