@@ -56,6 +56,17 @@ struct AppSettings: Codable, Equatable {
     var automationSteps: [AutomationStep] = AutomationStep.defaults
     /// Target branch for the "Merge & push" step. Empty = auto-detect main/master.
     var releaseBranch: String = ""
+    /// Rules the "Review" automation step checks the change against. Editable.
+    var reviewRules: String = AppSettings.defaultReviewRules
+
+    static let defaultReviewRules = """
+    - Follow MVVM: keep views declarative; put logic in the view model, not the view.
+    - Separate UI from business logic; no networking/file/db calls inside views.
+    - Use SwiftUI state correctly (@State/@StateObject/@ObservedObject/@Binding); single source of truth.
+    - Do heavy work off the main thread; only update UI on the main actor.
+    - No force-unwraps or force-try in non-test code; handle errors and edge cases.
+    - Small, well-named functions; match the surrounding style; no dead code.
+    """
 
     init() {}
 
@@ -63,7 +74,7 @@ struct AppSettings: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case providerKind, modelName, customEndpoint, skipPermissions, autoApplyTrustedChanges
         case defaultImprovement, confirmDestructiveActions, mockStreamDelay
-        case automationEnabled, automationSteps, releaseBranch
+        case automationEnabled, automationSteps, releaseBranch, reviewRules
     }
 
     init(from decoder: Decoder) throws {
@@ -78,12 +89,17 @@ struct AppSettings: Codable, Equatable {
         mockStreamDelay = (try? c.decode(Double.self, forKey: .mockStreamDelay)) ?? 0.02
         automationEnabled = (try? c.decode(Bool.self, forKey: .automationEnabled)) ?? false
         releaseBranch = (try? c.decode(String.self, forKey: .releaseBranch)) ?? ""
-        let steps = (try? c.decode([AutomationStep].self, forKey: .automationSteps)) ?? AutomationStep.defaults
-        // Make sure newly-added step kinds appear even in older saved settings.
-        var merged = steps
-        for missing in AutomationStep.defaults where !merged.contains(where: { $0.kind == missing.kind }) {
-            merged.append(missing)
+        reviewRules = (try? c.decode(String.self, forKey: .reviewRules)) ?? AppSettings.defaultReviewRules
+        let saved = (try? c.decode([AutomationStep].self, forKey: .automationSteps)) ?? []
+        // Always present steps in the canonical pipeline order (review → test →
+        // … → commit → merge&push), carrying over the user's enabled choices.
+        // This also slots newly-added steps into their correct position rather
+        // than appending them at the end.
+        automationSteps = AutomationStep.defaults.map { def in
+            if let s = saved.first(where: { $0.kind == def.kind }) {
+                return AutomationStep(kind: def.kind, enabled: s.enabled)
+            }
+            return def
         }
-        automationSteps = merged
     }
 }

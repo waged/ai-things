@@ -19,6 +19,14 @@ final class ClaudeCodeProvider: AIProvider {
 
     /// Captured from the CLI so follow-up messages continue the same session.
     private var sessionID: String?
+    /// The currently-running CLI process, so it can be killed on app quit.
+    private var currentProcess: Process?
+
+    /// Terminate any running `claude` process immediately (called on app quit).
+    func terminateRunning() {
+        currentProcess?.terminate()
+        currentProcess = nil
+    }
 
     init(model: String = "", skipPermissions: Bool = true) {
         self.model = model
@@ -152,6 +160,7 @@ final class ClaudeCodeProvider: AIProvider {
             }
 
             process.terminationHandler = { proc in
+                self.currentProcess = nil
                 outPipe.fileHandleForReading.readabilityHandler = nil
                 errPipe.fileHandleForReading.readabilityHandler = nil
                 if !stdoutBuffer.isEmpty, let text = self.render(stdoutBuffer) {
@@ -172,6 +181,7 @@ final class ClaudeCodeProvider: AIProvider {
 
             do {
                 try process.run()
+                self.currentProcess = process
                 // Feed the prompt over stdin — avoids any shell-quoting concerns.
                 if let data = request.userMessage.data(using: .utf8) {
                     stdinPipe.fileHandleForWriting.write(data)

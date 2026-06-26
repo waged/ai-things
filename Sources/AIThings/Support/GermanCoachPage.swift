@@ -74,6 +74,11 @@ extension GermanCoach {
             <div class="tab" data-t="resources">🔗 Resources</div>
           </div>
 
+          <div id="voiceWarn" style="display:none;background:#3a2e12;border:1px solid #6b5320;border-radius:10px;padding:10px 14px;margin:0 0 14px;color:#f2b04a;font-size:13px">
+            ⚠︎ No German voice is installed, so audio uses English pronunciation.
+            Install one: <b>System Settings → Accessibility → Spoken Content → System Voice → Manage Voices…</b> and download a German (Deutsch) voice, then reopen this page.
+          </div>
+
           <section id="practice">
             <div class="row">
               <select id="scenario" style="max-width:260px"></select>
@@ -178,7 +183,30 @@ extension GermanCoach {
         // ---- Audio + speech ----
         let actx;
         function beep(ok){try{actx=actx||new (window.AudioContext||window.webkitAudioContext)();const o=actx.createOscillator(),g=actx.createGain();o.connect(g);g.connect(actx.destination);o.type='sine';o.frequency.value=ok?660:160;g.gain.value=0.05;o.start();o.stop(actx.currentTime+0.13);}catch(e){}}
-        function speak(text){try{const u=new SpeechSynthesisUtterance(text);u.lang='de-DE';u.rate=0.95;const v=speechSynthesis.getVoices().find(v=>v.lang&&v.lang.indexOf('de')===0);if(v)u.voice=v;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
+
+        // German voice — getVoices() is empty until voices load, so cache it and
+        // refresh on voiceschanged. Without a real de voice the browser would
+        // read German with English pronunciation.
+        let deVoice=null;
+        function loadVoices(){
+          try{
+            const vs=speechSynthesis.getVoices()||[];
+            deVoice=vs.find(v=>v.lang&&v.lang.toLowerCase().indexOf('de')===0)||null;
+            const warn=document.getElementById('voiceWarn');
+            if(warn) warn.style.display=(vs.length&&!deVoice)?'block':'none';
+          }catch(e){}
+        }
+        if(typeof speechSynthesis!=='undefined'){ loadVoices(); speechSynthesis.onvoiceschanged=loadVoices; setTimeout(loadVoices,300); }
+        function speak(text){
+          try{
+            if(!deVoice)loadVoices();
+            const u=new SpeechSynthesisUtterance(text);
+            u.lang='de-DE'; u.rate=0.92;
+            if(deVoice)u.voice=deVoice;
+            speechSynthesis.cancel();
+            speechSynthesis.speak(u);
+          }catch(e){}
+        }
 
         function norm(s){
           s=(s||'').toLowerCase();

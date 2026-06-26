@@ -37,12 +37,11 @@ final class ChatStore {
         queue.asyncAfter(deadline: .now() + 0.4, execute: work)
     }
 
-    /// Force an immediate, synchronous write (e.g. on quit).
+    /// Force an immediate, synchronous write (e.g. on quit) — blocks until the
+    /// file is on disk so nothing is lost when the app exits.
     func saveNow(_ sessions: [ChatSession]) {
         pendingWork?.cancel()
-        queue.async { [fileURL] in
-            guard let data = try? JSONEncoder().encode(sessions) else { return }
-            try? data.write(to: fileURL, options: .atomic)
-        }
+        guard let data = try? JSONEncoder().encode(sessions) else { return }
+        try? data.write(to: fileURL, options: .atomic)
     }
 }

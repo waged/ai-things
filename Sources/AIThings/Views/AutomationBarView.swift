@@ -10,13 +10,76 @@ struct AutomationBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
-            if expanded {
-                stepGrid
-            }
+            if runActive { progressStrip }
+            if expanded { stepGrid }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Theme.surface)
+    }
+
+    // MARK: - Live progress (visible while a pipeline runs)
+
+    private var runActive: Bool { !model.stepStatus.isEmpty }
+
+    private var progressStrip: some View {
+        let steps = model.settings.automationSteps.filter(\.enabled)
+        let total = steps.count
+        let done = steps.filter { model.stepStatus[$0.kind] == .done }.count
+        let running = steps.first { model.stepStatus[$0.kind] == .running }
+        let failed = steps.first { model.stepStatus[$0.kind] == .failed }
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
+                if let failed {
+                    Image(systemName: "xmark.octagon.fill").foregroundStyle(Theme.danger)
+                    Text("Stopped at \(failed.kind.title) — fix it, then run again")
+                        .font(Theme.mono(11, weight: .semibold)).foregroundStyle(Theme.danger)
+                } else {
+                    if running != nil { ProgressView().controlSize(.mini) }
+                    else { Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.success) }
+                    Text(running != nil
+                         ? "Running \(running!.kind.title) — step \(done + 1) of \(total)"
+                         : "Automation complete — \(done)/\(total) steps")
+                        .font(Theme.mono(11, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                }
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(steps) { step in
+                        stepChip(step.kind)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func stepChip(_ kind: AutomationStep.Kind) -> some View {
+        let state = model.stepStatus[kind]
+        HStack(spacing: 5) {
+            switch state {
+            case .running: ProgressView().controlSize(.mini)
+            case .done:    Image(systemName: "checkmark").font(.system(size: 9, weight: .bold))
+            case .failed:  Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+            default:        Image(systemName: kind.symbol).font(.system(size: 9))
+            }
+            Text(kind.title).font(Theme.mono(9.5, weight: state == .running ? .bold : .regular))
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .foregroundStyle(chipColor(state))
+        .background(chipColor(state).opacity(0.16))
+        .clipShape(Capsule())
+    }
+
+    private func chipColor(_ state: AppModel.StepState?) -> Color {
+        switch state {
+        case .running: return Theme.warning
+        case .done:    return Theme.success
+        case .failed:  return Theme.danger
+        default:        return Theme.textSecondary
+        }
     }
 
     private var header: some View {
@@ -71,6 +134,25 @@ struct AutomationBarView: View {
                 }
                 .opacity(model.settings.automationEnabled ? 1 : 0.5)
             }
+            if reviewEnabled {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.shield").foregroundStyle(Theme.highlight)
+                        Text("Review checklist (the Review step checks these):")
+                            .font(Theme.mono(10)).foregroundStyle(Theme.textSecondary)
+                    }
+                    TextEditor(text: $model.settings.reviewRules)
+                        .font(Theme.mono(10.5))
+                        .scrollContentBackground(.hidden)
+                        .frame(height: 96)
+                        .padding(6)
+                        .background(Theme.surfaceElevated)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+                }
+                .padding(.top, 4)
+            }
+
             if mergeEnabled {
                 HStack(spacing: 6) {
                     Image(systemName: "arrow.triangle.merge").foregroundStyle(Theme.highlight)
@@ -92,6 +174,10 @@ struct AutomationBarView: View {
 
     private var mergeEnabled: Bool {
         model.settings.automationSteps.first(where: { $0.kind == .mergeAndPush })?.enabled ?? false
+    }
+
+    private var reviewEnabled: Bool {
+        model.settings.automationSteps.first(where: { $0.kind == .review })?.enabled ?? false
     }
 
     @ViewBuilder

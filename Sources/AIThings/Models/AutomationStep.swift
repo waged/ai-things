@@ -54,10 +54,14 @@ extension AutomationStep.Kind {
         }
     }
 
+    /// Gating steps must pass (verify → fix → re-verify); a failure stops the
+    /// pipeline before commit/merge.
+    var isGating: Bool { self == .review || self == .test }
+
     var detail: String {
         switch self {
-        case .review:        return "Verify the change works & fix issues"
-        case .test:          return "Run the test suite & fix failures"
+        case .review:        return "Verify rules, fix, must pass (gate)"
+        case .test:          return "Run tests, fix, must pass (gate)"
         case .translations:  return "Add any missing translations"
         case .updateDocs:    return "Refresh CLAUDE.md & .aithings docs"
         case .bumpVersion:   return "Increment the project version"

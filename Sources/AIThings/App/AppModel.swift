@@ -566,7 +566,7 @@ final class AppModel: ObservableObject {
 
     // MARK: - Automation pipeline
 
-    enum StepState: Equatable { case idle, running, done }
+    enum StepState: Equatable { case idle, running, done, failed }
     @Published var stepStatus: [AutomationStep.Kind: StepState] = [:]
 
     /// Run the enabled post-task steps in order, each as a Claude follow-up turn.
@@ -579,8 +579,32 @@ final class AppModel: ObservableObject {
             if Task.isCancelled { break }
             stepStatus[step.kind] = .running
             appendSystem("▶︎ Automation — \(step.kind.title)")
-            await runStep(step.kind)
-            stepStatus[step.kind] = .done
+
+            if step.kind.isGating {
+                // Gate: verify → fix → re-verify, up to maxAttempts. If it still
+                // fails, stop the pipeline (don't commit/merge a broken change).
+                let maxAttempts = 3
+                var passed = false
+                var attempt = 1
+                while attempt <= maxAttempts {
+                    if Task.isCancelled { break }
+                    if attempt > 1 { appendSystem("↻ \(step.kind.title) — retry \(attempt)/\(maxAttempts)") }
+                    let reply = await runStep(step.kind)
+                    if !verdictFailed(reply) { passed = true; break }
+                    attempt += 1
+                }
+                if passed {
+                    stepStatus[step.kind] = .done
+                } else {
+                    stepStatus[step.kind] = .failed
+                    appendMessage(ChatMessage(role: .system, kind: .errorOutput,
+                        text: "⛔ Automation stopped: \(step.kind.title) didn't pass after \(maxAttempts) attempts. Remaining steps (incl. commit/merge) were skipped — fix it, then run again."))
+                    break
+                }
+            } else {
+                await runStep(step.kind)
+                stepStatus[step.kind] = .done
+            }
         }
         // Clear the status strip a few seconds after finishing.
         let snapshot = stepStatus
@@ -590,7 +614,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func runStep(_ kind: AutomationStep.Kind) async {
+    @discardableResult
+    private func runStep(_ kind: AutomationStep.Kind) async -> String {
         let context = await currentContext()
         let request = AIRequest(
             systemPrompt: aiService.systemPrompt(improvement: improvement, context: context,
@@ -601,6 +626,12 @@ final class AppModel: ObservableObject {
             appendSystemPrompt: behaviorDirectives()
         )
         await streamAssistant(request)
+        return session.messages.last(where: { $0.role == .assistant })?.text ?? ""
+    }
+
+    /// A gating step reports failure by ending with the STATUS: FAIL marker.
+    private func verdictFailed(_ reply: String) -> Bool {
+        reply.uppercased().contains("STATUS: FAIL")
     }
 
     /// The effective base/target branch for merges: the user's setting, else
@@ -611,7 +642,20 @@ final class AppModel: ObservableObject {
     }
 
     private func stepPrompt(for kind: AutomationStep.Kind) -> String {
+        // Gating steps must fix what they find and self-report a verdict so the
+        // pipeline can loop until it passes (or stop before commit/merge).
+        let gate = "\n\nIf anything fails, FIX it in the code, then re-verify. Repeat until it passes. End your reply with a single final line: STATUS: PASS if everything passes, otherwise STATUS: FAIL followed by the remaining issues."
+
         switch kind {
+        case .review:
+            let rules = settings.reviewRules.trimmingCharacters(in: .whitespacesAndNewlines)
+            var p = kind.prompt
+            if !rules.isEmpty {
+                p += "\n\nCheck the change against these project rules and fix any violations:\n\(rules)"
+            }
+            return p + gate
+        case .test:
+            return kind.prompt + gate
         case .mergeAndPush:
             let base = releaseBranch
             return """
@@ -653,6 +697,20 @@ final class AppModel: ObservableObject {
         streamTask?.cancel()
         isStreaming = false
         statusText = "Cancelled"
+    }
+
+    /// Called when the app is quitting: stop any running Claude/CLI work so no
+    /// process is orphaned (and no usage keeps burning), and flush chats to disk
+    /// synchronously so nothing is lost.
+    func shutdown() {
+        streamTask?.cancel() // cancels the stream → provider terminates the `claude` process
+        (aiService.provider as? ClaudeCodeProvider)?.terminateRunning() // and kill it directly, now
+        if let i = sessions.firstIndex(where: { $0.id == session.id }) {
+            sessions[i] = session
+        } else {
+            sessions.append(session)
+        }
+        chatStore.saveNow(sessions)
     }
 
     /// Concise behavior directives derived from the composer toggles. Passed to
