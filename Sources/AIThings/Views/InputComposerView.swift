@@ -56,16 +56,23 @@ struct InputComposerView: View {
 
     private var togglesRow: some View {
         HStack(spacing: 10) {
-            // One-shot: tidy the draft in place for review (does not send).
+            // One-shot: rewrite the draft in place for review (does not send).
             Button { model.improveDraft() } label: {
-                Label("Make clearer", systemImage: "wand.and.stars")
-                    .font(Theme.mono(10.5))
+                HStack(spacing: 4) {
+                    if model.isImproving {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "wand.and.stars")
+                    }
+                    Text(model.isImproving ? "Improving…" : "Make clearer")
+                }
+                .font(Theme.mono(10.5))
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
             .tint(Theme.accent)
-            .disabled(model.draft.trimmingCharacters(in: .whitespaces).isEmpty)
-            .help("Clean up the draft (trim filler, fix spacing) — review before sending")
+            .disabled(model.isImproving || model.draft.trimmingCharacters(in: .whitespaces).isEmpty)
+            .help("Rewrite the draft to be clearer (AI) — review before sending")
 
             toggle("Ask questions first", isOn: $model.improvement.askQuestionsFirst, symbol: "questionmark.circle")
             toggle("Direct mode", isOn: $model.improvement.directMode, symbol: "bolt")

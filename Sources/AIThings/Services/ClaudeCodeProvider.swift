@@ -34,6 +34,38 @@ final class ClaudeCodeProvider: AIProvider {
         set { sessionID = newValue }
     }
 
+    /// One-shot text rewrite using a fast model — no project context, no
+    /// session, no tools. Returns nil on failure so the caller can fall back.
+    func rewrite(_ text: String) async -> String? {
+        guard let cli = resolveCLI() else { return nil }
+        let prompt = """
+        Rewrite the user's message to be clear, concise, and grammatically correct.
+        Preserve the original meaning and intent. Keep any code, file paths, and
+        inline tokens like [[img:abc12345]] exactly as-is. Do not answer or execute
+        the request — only rewrite it. Reply with ONLY the rewritten message.
+
+        Message:
+        \(text)
+        """
+        return await withCheckedContinuation { continuation in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: cli.binary)
+            process.arguments = ["-p", prompt, "--output-format", "text", "--model", "haiku"]
+            var env = ProcessInfo.processInfo.environment
+            env["PATH"] = cli.path
+            process.environment = env
+            let out = Pipe()
+            process.standardOutput = out
+            process.standardError = Pipe()
+            process.terminationHandler = { proc in
+                let data = out.fileHandleForReading.readDataToEndOfFile()
+                let result = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                continuation.resume(returning: (proc.terminationStatus == 0 && !result.isEmpty) ? result : nil)
+            }
+            do { try process.run() } catch { continuation.resume(returning: nil) }
+        }
+    }
+
     var hasResolvedCLI: Bool { Self.resolved != nil || resolveCLI() != nil }
 
     // MARK: - Streaming

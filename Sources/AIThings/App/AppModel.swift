@@ -470,12 +470,25 @@ final class AppModel: ObservableObject {
         return ([chat.title] + userMsgs).joined(separator: ". ")
     }
 
-    /// Clean up the current draft in place (for review) — does NOT send.
+    @Published var isImproving = false
+
+    /// Rewrite the current draft in place (for review) — does NOT send.
+    /// Uses Claude for a real rewrite when available, with an instant local
+    /// cleanup as fallback.
     func improveDraft() {
         let raw = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return }
-        let improved = MessageImprovementService.heuristicRewrite(raw)
-        if improved != draft { draft = improved }
+        guard !raw.isEmpty, !isImproving else { return }
+
+        if let claude = aiService.provider as? ClaudeCodeProvider {
+            isImproving = true
+            Task {
+                let improved = await claude.rewrite(raw)
+                isImproving = false
+                draft = improved ?? MessageImprovementService.heuristicRewrite(raw)
+            }
+        } else {
+            draft = MessageImprovementService.heuristicRewrite(raw)
+        }
     }
 
     private func runTurn(_ raw: String, attachments: [UserAttachment]) async {
