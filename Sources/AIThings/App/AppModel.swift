@@ -40,12 +40,11 @@ final class AppModel: ObservableObject {
     @Published var pendingAttachments: [UserAttachment] = []
     @Published var draft: String = ""
 
-    /// The session whose turn is currently streaming (nil = none). A turn is
-    /// bound to the chat it started in, so its output never leaks into another
-    /// chat the user opens while it runs.
-    @Published private(set) var streamingSessionID: UUID?
-    /// True only when the chat currently on screen is the one streaming.
-    var isStreaming: Bool { streamingSessionID != nil && streamingSessionID == session.id }
+    /// Sessions with a turn currently streaming. Chats run in parallel, each
+    /// bound to its own chat, so output never leaks between them.
+    @Published private(set) var streamingSessions: Set<UUID> = []
+    /// True only when the chat currently on screen is one that's streaming.
+    var isStreaming: Bool { streamingSessions.contains(session.id) }
     @Published var statusText = "Idle"
 
     /// Flipped to request the composer take focus (observed by the view).
@@ -66,7 +65,44 @@ final class AppModel: ObservableObject {
     private let improver: MessageImprovementService
     private let matcher = TopicMatcher()
 
-    private var streamTask: Task<Void, Never>?
+    /// In-flight turns, keyed by the chat they belong to, so chats stream in
+    /// parallel and cancelling one never touches another.
+    private var streamTasks: [UUID: Task<Void, Never>] = [:]
+
+    /// Where each in-flight turn is working (project + branch), so we can warn
+    /// when two agents run on the SAME working tree. `turnGeneration` guards the
+    /// cleanup so a cancelled turn never clears a newer one's entry.
+    private var activeTurns: [UUID: (path: String?, branch: String?)] = [:]
+    private var turnGeneration: [UUID: Int] = [:]
+
+    /// Register a starting turn for `sid`; returns its generation token.
+    private func beginTurn(_ sid: UUID) -> Int {
+        let gen = (turnGeneration[sid] ?? 0) + 1
+        turnGeneration[sid] = gen
+        activeTurns[sid] = (currentProject?.path, currentBranch)
+        return gen
+    }
+
+    private func endTurn(_ sid: UUID, gen: Int) {
+        if turnGeneration[sid] == gen { activeTurns[sid] = nil }
+    }
+
+    /// Warn (in the chat) when another chat is already running an agent on the
+    /// same project AND branch — different branches are independent, so no warning.
+    private func warnIfConcurrentAgent(for sid: UUID) {
+        guard let mine = activeTurns[sid] else { return }
+        let busy = activeTurns.contains {
+            $0.key != sid && $0.value.path == mine.path && $0.value.branch == mine.branch
+        }
+        guard busy else { return }
+        let location = mine.branch.map { "branch “\($0)”" } ?? "this project"
+        appendSystem("⚠︎ Another chat is already working in \(location). Running both agents on the same branch can cause conflicting edits — consider waiting for it to finish, or move one to a different branch.", to: sid)
+    }
+
+    /// A @Sendable callback that stores this turn's CLI session id onto chat `sid`.
+    private func sessionCapture(for sid: UUID) -> @Sendable (String) -> Void {
+        { [weak self] cid in Task { @MainActor in self?.storeClaudeSession(cid, for: sid) } }
+    }
 
     // MARK: - Routing (Pillar 1)
 
@@ -112,7 +148,6 @@ final class AppModel: ObservableObject {
         }
 
         reloadProvider()
-        applyClaudeSession()
         if let url = currentProject?.url {
             projectInitialized = projectService.isInitializedForAI(at: url)
         }
@@ -144,15 +179,15 @@ final class AppModel: ObservableObject {
     /// The active Claude Code provider, if that's the selected backend.
     private var claudeProvider: ClaudeCodeProvider? { aiService.provider as? ClaudeCodeProvider }
 
-    /// Point the CLI at the current chat's saved session so it resumes context.
-    private func applyClaudeSession() {
-        claudeProvider?.resumeSessionID = session.claudeSessionID
+    /// The saved CLI session id for a chat (to resume its context), looked up
+    /// per-turn so parallel chats never share `--resume` state.
+    private func claudeSessionID(of sid: UUID) -> String? {
+        session.id == sid ? session.claudeSessionID : sessions.first { $0.id == sid }?.claudeSessionID
     }
 
     /// Remember the CLI session id on the chat that owned this turn (which may no
-    /// longer be the one on screen).
-    private func captureClaudeSession(to sid: UUID) {
-        guard let id = claudeProvider?.resumeSessionID else { return }
+    /// longer be the one on screen). Called via the request's `onSessionID`.
+    private func storeClaudeSession(_ id: String, for sid: UUID) {
         if session.id == sid {
             session.claudeSessionID = id
         } else if let i = sessions.firstIndex(where: { $0.id == sid }) {
@@ -183,7 +218,6 @@ final class AppModel: ObservableObject {
             statusText = "Reopened \(existing.count) chat\(existing.count == 1 ? "" : "s")"
         } else if !session.messages.contains(where: { $0.role == .user }) {
             session.projectPath = project.path // reuse the empty welcome chat
-            applyClaudeSession()
             appendSystem("Opened project: \(project.path)")
         } else {
             startNewSession(projectPath: project.path, announce: false)
@@ -244,9 +278,11 @@ final class AppModel: ObservableObject {
     /// Shared driver for the docs init/update turns.
     private func runDocsTask(userLabel: String, prompt: String) {
         let sid = session.id
-        streamTask?.cancel()
-        streamTask = Task {
+        let gen = beginTurn(sid)
+        streamTasks[sid]?.cancel()
+        streamTasks[sid] = Task {
             appendMessage(ChatMessage(role: .user, text: userLabel), to: sid)
+            warnIfConcurrentAgent(for: sid)
             let context = await currentContext()
             let request = AIRequest(
                 systemPrompt: aiService.systemPrompt(improvement: improvement, context: context,
@@ -254,9 +290,12 @@ final class AppModel: ObservableObject {
                 history: messages(of: sid),
                 userMessage: prompt,
                 context: context,
-                appendSystemPrompt: behaviorDirectives()
+                appendSystemPrompt: behaviorDirectives(),
+                resumeSessionID: claudeSessionID(of: sid),
+                onSessionID: sessionCapture(for: sid)
             )
             await streamAssistant(request, in: sid)
+            endTurn(sid, gen: gen)
         }
     }
 
@@ -283,13 +322,16 @@ final class AppModel: ObservableObject {
     // MARK: - Chat session management
 
     /// Chats for the current project, newest first (active / archived split).
+    // Sidebar order is by creation time (newest first) so the list is stable —
+    // merely opening a chat must never reorder it. (Reopen-the-last-used logic
+    // still uses lastOpenedAt elsewhere.)
     var activeSessions: [ChatSession] {
         sessions.filter { !$0.isArchived && belongsToCurrentProject($0) }
-            .sorted { $0.lastOpenedAt > $1.lastOpenedAt }
+            .sorted { $0.createdAt > $1.createdAt }
     }
     var archivedSessions: [ChatSession] {
         sessions.filter { $0.isArchived && belongsToCurrentProject($0) }
-            .sorted { $0.lastOpenedAt > $1.lastOpenedAt }
+            .sorted { $0.createdAt > $1.createdAt }
     }
 
     /// Make a chat the active one and mark it as just-opened, so reopening the
@@ -301,7 +343,6 @@ final class AppModel: ObservableObject {
         if let i = sessions.firstIndex(where: { $0.id == c.id }) {
             sessions[i].lastOpenedAt = c.lastOpenedAt
         }
-        applyClaudeSession()
     }
 
     private func belongsToCurrentProject(_ s: ChatSession) -> Bool {
@@ -323,7 +364,6 @@ final class AppModel: ObservableObject {
                                claudeSessionID: source.claudeSessionID)
         sessions.insert(copy, at: 0)
         session = copy
-        applyClaudeSession()
         appendSystem("New chat continuing from “\(source.title)”. Claude keeps the earlier context.")
         chatStore.save(sessions)
     }
@@ -333,7 +373,6 @@ final class AppModel: ObservableObject {
         let fresh = ChatSession(projectPath: projectPath)
         sessions.insert(fresh, at: 0)
         session = fresh
-        applyClaudeSession()
         if announce {
             appendSystem(currentProject == nil
                 ? "New chat. Open a project to begin."
@@ -480,8 +519,12 @@ final class AppModel: ObservableObject {
         if !raw.isEmpty { inputHistory.append(raw) }
         session.lastOpenedAt = Date() // prompting marks this as the last-used chat
         let sid = session.id
-        streamTask?.cancel() // one active turn at a time; the prior turn keeps its own chat
-        streamTask = Task { await runTurn(raw, attachments: attachments, in: sid) }
+        let gen = beginTurn(sid)
+        streamTasks[sid]?.cancel() // replace only THIS chat's turn; other chats keep running
+        streamTasks[sid] = Task {
+            await runTurn(raw, attachments: attachments, in: sid)
+            endTurn(sid, gen: gen)
+        }
     }
 
     // MARK: - Route resolution (from the suggestion banner)
@@ -585,6 +628,7 @@ final class AppModel: ObservableObject {
     private func runTurn(_ raw: String, attachments: [UserAttachment], in sid: UUID) async {
         let messageText = raw
         appendMessage(ChatMessage(role: .user, text: messageText, attachments: attachments), to: sid)
+        warnIfConcurrentAgent(for: sid)
 
         // Feature/Bug mode: when starting from the base branch, auto-create a
         // branch named from the user's text. (The mode itself stays on and keeps
@@ -604,7 +648,9 @@ final class AppModel: ObservableObject {
             history: messages(of: sid),
             userMessage: promptForAI,
             context: context,
-            appendSystemPrompt: behaviorDirectives()
+            appendSystemPrompt: behaviorDirectives(),
+            resumeSessionID: claudeSessionID(of: sid),
+            onSessionID: sessionCapture(for: sid)
         )
         await streamAssistant(request, in: sid)
 
@@ -670,7 +716,9 @@ final class AppModel: ObservableObject {
             history: messages(of: sid),
             userMessage: stepPrompt(for: kind),
             context: context,
-            appendSystemPrompt: behaviorDirectives()
+            appendSystemPrompt: behaviorDirectives(),
+            resumeSessionID: claudeSessionID(of: sid),
+            onSessionID: sessionCapture(for: sid)
         )
         await streamAssistant(request, in: sid)
         return messages(of: sid).last(where: { $0.role == .assistant })?.text ?? ""
@@ -722,13 +770,11 @@ final class AppModel: ObservableObject {
     }
 
     private func streamAssistant(_ request: AIRequest, in sid: UUID) async {
-        streamingSessionID = sid
+        streamingSessions.insert(sid)
         if sid == session.id { statusText = "Thinking…" }
         defer {
-            // Only clear if we still own the streaming slot (a newer turn may have claimed it).
-            if streamingSessionID == sid { streamingSessionID = nil }
+            streamingSessions.remove(sid)
             if sid == session.id { statusText = isGitRepo ? "Connected" : "Idle" }
-            captureClaudeSession(to: sid)
             persist()
             Task { await refreshGit() } // reflect any edits/commits the AI made
         }
@@ -749,9 +795,11 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Stop only the chat currently on screen — other chats keep working.
     func cancelStreaming() {
-        streamTask?.cancel()
-        streamingSessionID = nil
+        let sid = session.id
+        streamTasks[sid]?.cancel()
+        streamingSessions.remove(sid)
         statusText = "Cancelled"
     }
 
@@ -759,8 +807,8 @@ final class AppModel: ObservableObject {
     /// process is orphaned (and no usage keeps burning), and flush chats to disk
     /// synchronously so nothing is lost.
     func shutdown() {
-        streamTask?.cancel() // cancels the stream → provider terminates the `claude` process
-        (aiService.provider as? ClaudeCodeProvider)?.terminateRunning() // and kill it directly, now
+        streamTasks.values.forEach { $0.cancel() } // cancel every chat's stream
+        (aiService.provider as? ClaudeCodeProvider)?.terminateRunning() // and kill them directly, now
         if let i = sessions.firstIndex(where: { $0.id == session.id }) {
             sessions[i] = session
         } else {

@@ -17,29 +17,28 @@ final class ClaudeCodeProvider: AIProvider {
     /// Pass `--dangerously-skip-permissions` so edits apply without prompts.
     var skipPermissions: Bool
 
-    /// Captured from the CLI so follow-up messages continue the same session.
-    private var sessionID: String?
-    /// The currently-running CLI process, so it can be killed on app quit.
-    private var currentProcess: Process?
+    /// Every live CLI process, so they can all be killed on app quit. A chat's
+    /// session id is NOT stored here — it travels with each request — so multiple
+    /// chats can stream in parallel without sharing state.
+    private let processLock = NSLock()
+    private var runningProcesses: [Process] = []
 
-    /// Terminate any running `claude` process immediately (called on app quit).
+    private func track(_ process: Process) {
+        processLock.lock(); runningProcesses.append(process); processLock.unlock()
+    }
+    private func untrack(_ process: Process) {
+        processLock.lock(); runningProcesses.removeAll { $0 === process }; processLock.unlock()
+    }
+
+    /// Terminate every running `claude` process immediately (called on app quit).
     func terminateRunning() {
-        currentProcess?.terminate()
-        currentProcess = nil
+        processLock.lock(); let procs = runningProcesses; runningProcesses.removeAll(); processLock.unlock()
+        procs.forEach { $0.terminate() }
     }
 
     init(model: String = "", skipPermissions: Bool = true) {
         self.model = model
         self.skipPermissions = skipPermissions
-    }
-
-    /// Forget the current conversation (e.g. when the project changes).
-    func resetSession() { sessionID = nil }
-
-    /// Read/restore the CLI session id so a chat can resume its exact context.
-    var resumeSessionID: String? {
-        get { sessionID }
-        set { sessionID = newValue }
     }
 
     /// One-shot text rewrite using a fast model — no project context, no
@@ -182,7 +181,7 @@ final class ClaudeCodeProvider: AIProvider {
             var args = ["-p", "--output-format", "stream-json", "--verbose"]
             if skipPermissions { args.append("--dangerously-skip-permissions") }
             if !model.isEmpty { args += ["--model", model] }
-            if let sessionID { args += ["--resume", sessionID] }
+            if let resume = request.resumeSessionID { args += ["--resume", resume] }
             if !request.appendSystemPrompt.isEmpty {
                 args += ["--append-system-prompt", request.appendSystemPrompt]
             }
@@ -205,6 +204,7 @@ final class ClaudeCodeProvider: AIProvider {
             var stdoutBuffer = Data()
             var stderrText = ""
 
+            let onSessionID = request.onSessionID
             outPipe.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
                 guard !data.isEmpty else { return }
@@ -212,7 +212,7 @@ final class ClaudeCodeProvider: AIProvider {
                 while let newline = stdoutBuffer.firstIndex(of: 0x0A) {
                     let lineData = stdoutBuffer.subdata(in: stdoutBuffer.startIndex..<newline)
                     stdoutBuffer.removeSubrange(stdoutBuffer.startIndex...newline)
-                    if let text = self.render(lineData) { continuation.yield(text) }
+                    if let text = self.render(lineData, onSessionID: onSessionID) { continuation.yield(text) }
                 }
             }
             errPipe.fileHandleForReading.readabilityHandler = { handle in
@@ -221,10 +221,10 @@ final class ClaudeCodeProvider: AIProvider {
             }
 
             process.terminationHandler = { proc in
-                self.currentProcess = nil
+                self.untrack(proc)
                 outPipe.fileHandleForReading.readabilityHandler = nil
                 errPipe.fileHandleForReading.readabilityHandler = nil
-                if !stdoutBuffer.isEmpty, let text = self.render(stdoutBuffer) {
+                if !stdoutBuffer.isEmpty, let text = self.render(stdoutBuffer, onSessionID: onSessionID) {
                     continuation.yield(text)
                 }
                 if proc.terminationStatus != 0 {
@@ -242,7 +242,7 @@ final class ClaudeCodeProvider: AIProvider {
 
             do {
                 try process.run()
-                self.currentProcess = process
+                self.track(process)
                 // Feed the prompt over stdin — avoids any shell-quoting concerns.
                 if let data = request.userMessage.data(using: .utf8) {
                     stdinPipe.fileHandleForWriting.write(data)
@@ -257,7 +257,8 @@ final class ClaudeCodeProvider: AIProvider {
     // MARK: - stream-json rendering
 
     /// Turn one JSON line into a displayable string, or nil to skip it.
-    private func render(_ lineData: Data) -> String? {
+    /// `onSessionID` reports this turn's CLI session id back to the caller.
+    private func render(_ lineData: Data, onSessionID: (@Sendable (String) -> Void)?) -> String? {
         guard let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
               let type = object["type"] as? String else { return nil }
 
@@ -265,7 +266,7 @@ final class ClaudeCodeProvider: AIProvider {
         case "system":
             // Capture the session id from the init event for later --resume.
             if object["subtype"] as? String == "init", let sid = object["session_id"] as? String {
-                sessionID = sid
+                onSessionID?(sid)
             }
             return nil
 
@@ -273,7 +274,7 @@ final class ClaudeCodeProvider: AIProvider {
             return renderAssistant(object)
 
         case "result":
-            if let sid = object["session_id"] as? String { sessionID = sid }
+            if let sid = object["session_id"] as? String { onSessionID?(sid) }
             if (object["is_error"] as? Bool) == true {
                 let detail = (object["result"] as? String) ?? "request failed"
                 return "\n⚠︎ \(detail)\n"

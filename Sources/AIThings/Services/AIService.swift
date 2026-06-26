@@ -18,6 +18,12 @@ struct AIRequest {
     /// Concise behavior directives (from the composer toggles), appended to the
     /// backend's own system prompt. Used by the Claude Code provider.
     var appendSystemPrompt: String = ""
+    /// The chat's existing CLI session id to resume (nil = start fresh). Carried
+    /// per-request so parallel chats never share `--resume` state.
+    var resumeSessionID: String? = nil
+    /// Called (possibly off the main thread) with the CLI session id for THIS
+    /// turn, so the caller can store it on the correct chat.
+    var onSessionID: (@Sendable (String) -> Void)? = nil
 }
 
 /// A provider's reply. `plan` is set when the assistant proposes file changes.
