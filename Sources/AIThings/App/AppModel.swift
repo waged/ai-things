@@ -282,6 +282,7 @@ final class AppModel: ObservableObject {
         streamTasks[sid]?.cancel()
         streamTasks[sid] = Task {
             appendMessage(ChatMessage(role: .user, text: userLabel), to: sid)
+            nameChatIfNeeded(sid, from: userLabel)
             warnIfConcurrentAgent(for: sid)
             let context = await currentContext()
             let request = AIRequest(
@@ -309,6 +310,9 @@ final class AppModel: ObservableObject {
             return
         }
         currentBranch = await gitService.currentBranch(at: url)
+        // Remember the branch the on-screen chat is working on, so switching back
+        // to it later re-checks-out that branch.
+        if belongsToCurrentProject(session) { session.branch = currentBranch }
         branches = await gitService.listBranches(at: url)
         hasUncommittedChanges = await gitService.hasUncommittedChanges(at: url)
         changedFiles = await gitService.changedFiles(at: url)
@@ -385,6 +389,16 @@ final class AppModel: ObservableObject {
         guard id != session.id, let target = sessions.first(where: { $0.id == id }) else { return }
         persist()
         activate(target)
+        checkoutChatBranchIfNeeded()
+    }
+
+    /// When switching to a chat that worked on another branch, check that branch
+    /// out so the git bar reflects it. No-op if it's already current, gone, or
+    /// the chat never ran on a branch.
+    private func checkoutChatBranchIfNeeded() {
+        guard isGitRepo, let target = session.branch, !target.isEmpty, target != currentBranch,
+              branches.contains(where: { !$0.isRemote && $0.name == target }) else { return }
+        switchBranch(target)
     }
 
     /// Other active chats in this project, ranked by topic similarity (for merge).
@@ -455,7 +469,9 @@ final class AppModel: ObservableObject {
     /// Flush the working chat into the persisted list and schedule a save.
     private func persist() {
         session.updatedAt = Date()
-        session.title = session.derivedTitle
+        // Title is set once from the first message (see nameChatIfNeeded); don't
+        // re-derive it here — that mis-targeted the active chat during parallel
+        // turns and overwrote nicely-named titles.
         if let i = sessions.firstIndex(where: { $0.id == session.id }) {
             sessions[i] = session
         } else {
@@ -628,6 +644,7 @@ final class AppModel: ObservableObject {
     private func runTurn(_ raw: String, attachments: [UserAttachment], in sid: UUID) async {
         let messageText = raw
         appendMessage(ChatMessage(role: .user, text: messageText, attachments: attachments), to: sid)
+        nameChatIfNeeded(sid, from: messageText)
         warnIfConcurrentAgent(for: sid)
 
         // Feature/Bug mode: when starting from the base branch, auto-create a
@@ -957,6 +974,49 @@ final class AppModel: ObservableObject {
             words = Array(words.prefix(maxWords))
         }
         return words.joined(separator: " ")
+    }
+
+    /// A short, readable chat title from the first message — the SAME keyword
+    /// extraction used for branch names, just Title-Cased and without the
+    /// `feature/` / `bugfix/` prefix. Falls back to the first line.
+    static func niceChatTitle(from text: String) -> String {
+        let words = branchKeywords(from: text, maxWords: 5)
+            .split(separator: " ")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+        if !words.isEmpty { return words.joined(separator: " ") }
+        let line = text.split(separator: "\n").first.map(String.init) ?? text
+        return String(line.trimmingCharacters(in: .whitespaces).prefix(48))
+    }
+
+    private func chatTitle(of sid: UUID) -> String? {
+        session.id == sid ? session.title : sessions.first { $0.id == sid }?.title
+    }
+
+    private func setChatTitle(_ title: String, for sid: UUID) {
+        if session.id == sid {
+            session.title = title
+        } else if let i = sessions.firstIndex(where: { $0.id == sid }) {
+            sessions[i].title = title
+        }
+    }
+
+    /// Name a chat from its first user message, once. Sets an instant heuristic
+    /// title immediately, then upgrades it to a concise AI topic title — so a new
+    /// chat ALWAYS shows the topic it was asked about. Bound by id so a chat
+    /// streaming in the background is still named correctly.
+    private func nameChatIfNeeded(_ sid: UUID, from text: String) {
+        guard let current = chatTitle(of: sid), current.isEmpty || current == "New Chat" else { return }
+        let instant = Self.niceChatTitle(from: text)
+        guard !instant.isEmpty else { return }
+        setChatTitle(instant, for: sid)
+
+        // Upgrade to a clean topic title from the fast model, if available.
+        guard let claude = aiService.provider as? ClaudeCodeProvider, claude.hasResolvedCLI else { return }
+        Task {
+            guard let ai = await claude.suggestTitle(text), !ai.isEmpty else { return }
+            // Don't clobber a manual rename — only replace our own instant title.
+            if chatTitle(of: sid) == instant { setChatTitle(ai, for: sid) }
+        }
     }
 
     // MARK: - Git actions

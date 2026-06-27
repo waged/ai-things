@@ -24,11 +24,15 @@ struct ChatMessageView: View {
                     ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
                         switch segment {
                         case .text(let value):
-                            Text(value)
-                                .font(Theme.mono(12.5))
-                                .foregroundStyle(textColor)
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true)
+                            if message.role == .assistant && message.kind == .normal {
+                                assistantText(value)
+                            } else {
+                                Text(value)
+                                    .font(Theme.mono(12.5))
+                                    .foregroundStyle(textColor)
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         case .code(let code, let language):
                             CodeBlockView(code: code, language: language)
                         case .attachment(let attachment):
@@ -78,6 +82,74 @@ struct ChatMessageView: View {
                 .background(Theme.surfaceElevated)
                 .clipShape(Capsule())
         }
+    }
+
+    // MARK: - Assistant text (colored summary / achievements)
+
+    /// Render an assistant text block line-by-line so we can tint the parts that
+    /// summarize what was achieved: completed actions green, summary headers
+    /// highlighted, failures red, everything else default.
+    private func assistantText(_ value: String) -> some View {
+        let lines = value.components(separatedBy: "\n")
+        return VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                if line.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Color.clear.frame(height: 5)
+                } else {
+                    Text(line)
+                        .font(Theme.mono(12.5, weight: assistantLineWeight(line)))
+                        .foregroundStyle(assistantLineColor(line))
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private static let doneWords: Set<String> = [
+        "added", "fixed", "created", "implemented", "updated", "removed", "deleted",
+        "renamed", "merged", "pushed", "committed", "passed", "completed", "done",
+        "wired", "introduced", "resolved", "bumped", "refactored", "replaced",
+        "enabled", "disabled", "migrated", "built", "shipped", "verified"
+    ]
+    private static let failWords: Set<String> = [
+        "failed", "error", "blocked", "unable", "cannot", "broken"
+    ]
+    private static let headerWords: Set<String> = [
+        "summary", "changes", "achievements", "achieved", "result", "results",
+        "outcome", "what", "done"
+    ]
+
+    /// First word after any leading bullet / marker glyphs, lowercased.
+    private func firstWord(_ line: String) -> String {
+        let body = line.trimmingCharacters(in: .whitespaces)
+            .drop { "•-*◦·–—>».✦✓✅✔☑✗✘⛔❌ ".contains($0) }
+        return body.prefix { $0.isLetter }.lowercased()
+    }
+
+    private func assistantLineColor(_ line: String) -> Color {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.contains("STATUS: FAIL") { return Theme.danger }
+        if trimmed.contains("STATUS: PASS") { return Theme.success }
+        if let f = trimmed.first, "✗✘⛔❌".contains(f) { return Theme.danger }
+        if let f = trimmed.first, "✓✅✔☑".contains(f) { return Theme.success }
+
+        let word = firstWord(line)
+        if Self.failWords.contains(word) { return Theme.danger }
+        if Self.doneWords.contains(word) { return Theme.success }
+        // Summary headers are usually a short label line (often ending in ":").
+        if Self.headerWords.contains(word) && (trimmed.hasSuffix(":") || trimmed.count <= 28) {
+            return Theme.highlight
+        }
+        return textColor
+    }
+
+    private func assistantLineWeight(_ line: String) -> Font.Weight {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if Self.headerWords.contains(firstWord(line)) && (trimmed.hasSuffix(":") || trimmed.count <= 28) {
+            return .semibold
+        }
+        return .regular
     }
 
     // MARK: - Plan

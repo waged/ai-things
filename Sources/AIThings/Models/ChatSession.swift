@@ -14,6 +14,9 @@ struct ChatSession: Identifiable, Codable, Equatable {
     /// When this chat was last made active / prompted in — used to reopen the
     /// genuinely last-used chat (independent of `updatedAt`, which other actions bump).
     var lastOpenedAt: Date
+    /// The git branch this chat was last working on, so switching back to it can
+    /// check that branch out again (nil = never ran on a branch).
+    var branch: String?
 
     init(
         id: UUID = UUID(),
@@ -24,7 +27,8 @@ struct ChatSession: Identifiable, Codable, Equatable {
         updatedAt: Date = Date(),
         isArchived: Bool = false,
         claudeSessionID: String? = nil,
-        lastOpenedAt: Date = Date()
+        lastOpenedAt: Date = Date(),
+        branch: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -35,10 +39,11 @@ struct ChatSession: Identifiable, Codable, Equatable {
         self.isArchived = isArchived
         self.claudeSessionID = claudeSessionID
         self.lastOpenedAt = lastOpenedAt
+        self.branch = branch
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, messages, projectPath, createdAt, updatedAt, isArchived, claudeSessionID, lastOpenedAt
+        case id, title, messages, projectPath, createdAt, updatedAt, isArchived, claudeSessionID, lastOpenedAt, branch
     }
 
     // Tolerant decoding so adding fields never wipes saved chats.
@@ -53,6 +58,7 @@ struct ChatSession: Identifiable, Codable, Equatable {
         isArchived = (try? c.decode(Bool.self, forKey: .isArchived)) ?? false
         claudeSessionID = try? c.decode(String.self, forKey: .claudeSessionID)
         lastOpenedAt = (try? c.decode(Date.self, forKey: .lastOpenedAt)) ?? updatedAt
+        branch = try? c.decode(String.self, forKey: .branch)
     }
 
     /// First non-empty user message, used to auto-name a chat.

@@ -24,6 +24,15 @@ struct HeaderBarView: View {
                     .foregroundStyle(Theme.highlight)
             }
 
+            // Active chat name — so the full title is visible after selecting a chat.
+            let chatTitle = model.session.title.isEmpty ? "New Chat" : model.session.title
+            Label(chatTitle, systemImage: "bubble.left")
+                .font(Theme.mono(12))
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(chatTitle)
+
             Spacer()
 
             statusIndicator

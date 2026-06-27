@@ -144,6 +144,7 @@ struct SidebarView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(isCurrent ? Theme.textPrimary : Theme.textSecondary)
+        .help(chat.title.isEmpty ? "New Chat" : chat.title) // full name on hover (row truncates)
         .contextMenu {
             Button { model.forkSession(chat.id) } label: {
                 Label("New Chat from History", systemImage: "arrow.branch")

@@ -127,6 +127,49 @@ final class ClaudeCodeProvider: AIProvider {
         return raw.flatMap(Self.parseRoute)
     }
 
+    /// A short, human chat title summarizing the user's request, via a fast
+    /// model. Returns nil on failure so the caller can keep its heuristic title.
+    func suggestTitle(_ text: String) async -> String? {
+        guard let cli = resolveCLI() else { return nil }
+        let prompt = """
+        Write a SHORT title for a chat, summarizing the topic of the user's request below.
+        Rules: 2–6 words. Title Case. No quotes, no trailing punctuation, no preamble or explanation. Output ONLY the title.
+
+        Request:
+        \(text)
+        """
+        let raw: String? = await withCheckedContinuation { continuation in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: cli.binary)
+            process.arguments = ["-p", prompt, "--output-format", "text", "--model", "haiku"]
+            var env = ProcessInfo.processInfo.environment
+            env["PATH"] = cli.path
+            process.environment = env
+            let out = Pipe()
+            process.standardOutput = out
+            process.standardError = Pipe()
+            process.terminationHandler = { proc in
+                let data = out.fileHandleForReading.readDataToEndOfFile()
+                let result = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                continuation.resume(returning: (proc.terminationStatus == 0 && !result.isEmpty) ? result : nil)
+            }
+            do { try process.run() } catch { continuation.resume(returning: nil) }
+        }
+        return raw.map(Self.sanitizeTitle)
+    }
+
+    /// Keep just a clean one-line title (first line, no quotes, length-capped).
+    private static func sanitizeTitle(_ text: String) -> String {
+        var s = (text.split(separator: "\n").first.map(String.init) ?? text)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.count >= 2, let f = s.first, let l = s.last,
+           (f == "\"" && l == "\"") || (f == "'" && l == "'") || (f == "“" && l == "”") {
+            s = String(s.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        while let last = s.last, ".,:;!?".contains(last) { s = String(s.dropLast()) }
+        return String(s.prefix(60))
+    }
+
     /// Pull `{"decision":...,"chat":...}` out of the model's reply.
     private static func parseRoute(_ text: String) -> (decision: String, chat: Int)? {
         guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"),
