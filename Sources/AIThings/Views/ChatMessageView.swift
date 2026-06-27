@@ -3,7 +3,9 @@ import SwiftUI
 /// Renders one conversation line in terminal style, parsing ``` code fences
 /// into copyable code blocks and showing attachments / plans.
 struct ChatMessageView: View {
-    @EnvironmentObject private var model: AppModel
+    // No @EnvironmentObject here on purpose: this view must NOT re-render on every
+    // keystroke in the composer (draft lives on the same model). It depends only
+    // on its `message`, so body runs only when the message itself changes.
     let message: ChatMessage
     @State private var preview: UserAttachment?
 
@@ -178,13 +180,7 @@ struct ChatMessageView: View {
 
             switch plan.status {
             case .proposed:
-                HStack {
-                    Button("Approve & Apply") { model.approvePlan(messageID: message.id) }
-                        .buttonStyle(.borderedProminent)
-                    Button("Reject") { model.rejectPlan(messageID: message.id) }
-                        .buttonStyle(.bordered)
-                }
-                .controlSize(.small)
+                PlanActionButtons(messageID: message.id)
             case .approved, .applied:
                 Label("Applied", systemImage: "checkmark.circle.fill").foregroundStyle(Theme.success)
                     .font(Theme.mono(11))
@@ -295,5 +291,23 @@ struct ChatMessageView: View {
             if !tail.isEmpty { result.append(.text(tail)) }
         }
         return result.isEmpty ? [.text(text)] : result
+    }
+}
+
+/// Approve/Reject buttons for a proposed plan. Split out so it (not the whole
+/// message row) is the only thing holding the model — keeps message rows from
+/// re-rendering on every composer keystroke.
+private struct PlanActionButtons: View {
+    @EnvironmentObject private var model: AppModel
+    let messageID: UUID
+
+    var body: some View {
+        HStack {
+            Button("Approve & Apply") { model.approvePlan(messageID: messageID) }
+                .buttonStyle(.borderedProminent)
+            Button("Reject") { model.rejectPlan(messageID: messageID) }
+                .buttonStyle(.bordered)
+        }
+        .controlSize(.small)
     }
 }
