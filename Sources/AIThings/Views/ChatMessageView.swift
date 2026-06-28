@@ -53,6 +53,19 @@ struct ChatMessageView: View {
                 }
             }
         }
+        .padding(message.role == .user ? 8 : 0)
+        .background {
+            // Tint the user's own turns so the conversation reads as alternating.
+            if message.role == .user {
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(Theme.user.opacity(0.07))
+                    .overlay(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Theme.user.opacity(0.55))
+                            .frame(width: 2.5)
+                    }
+            }
+        }
         .frame(maxWidth: .infinity, alignment: .leading)
         .sheet(item: $preview) { ImagePreviewView(attachment: $0) }
     }
@@ -77,12 +90,25 @@ struct ChatMessageView: View {
             .buttonStyle(.plain)
             .help("Click to enlarge")
         } else {
-            Label(attachment.name, systemImage: attachment.symbol)
+            Button { preview = attachment } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: attachment.symbol)
+                    Text(attachment.name).lineLimit(1)
+                    Text(attachment.typeLabel)
+                        .font(Theme.mono(8, weight: .bold))
+                        .foregroundStyle(Theme.textSecondary)
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(Theme.surface)
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                }
                 .font(Theme.mono(11))
                 .foregroundStyle(Theme.highlight)
                 .padding(.horizontal, 8).padding(.vertical, 4)
                 .background(Theme.surfaceElevated)
                 .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .help("Click to preview")
         }
     }
 
@@ -93,18 +119,62 @@ struct ChatMessageView: View {
     /// highlighted, failures red, everything else default.
     private func assistantText(_ value: String) -> some View {
         let lines = value.components(separatedBy: "\n")
-        return VStack(alignment: .leading, spacing: 2) {
+        return VStack(alignment: .leading, spacing: 3) {
             ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                if line.trimmingCharacters(in: .whitespaces).isEmpty {
-                    Color.clear.frame(height: 5)
-                } else {
-                    Text(line)
-                        .font(Theme.mono(12.5, weight: assistantLineWeight(line)))
-                        .foregroundStyle(assistantLineColor(line))
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                assistantLine(line)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func assistantLine(_ line: String) -> some View {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty {
+            Color.clear.frame(height: 5)
+        } else if trimmed.hasPrefix("⚙") {
+            toolActivityRow(trimmed)
+        } else {
+            Text(line)
+                .font(Theme.mono(12.5, weight: assistantLineWeight(line)))
+                .foregroundStyle(assistantLineColor(line))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// A scannable, color-coded row for an agent action ("⚙︎ Edit · file.dart"),
+    /// so the conversation visibly shows what the agent is doing.
+    private func toolActivityRow(_ line: String) -> some View {
+        let afterGlyph = line.drop { !$0.isLetter }            // "Edit · file.dart"
+        let name = String(afterGlyph.prefix { $0.isLetter })   // "Edit"
+        let style = Self.toolStyle(name)
+        return HStack(spacing: 6) {
+            Image(systemName: style.symbol)
+                .font(.system(size: 10, weight: .semibold))
+            Text(afterGlyph.isEmpty ? line : String(afterGlyph))
+                .font(Theme.mono(11.5, weight: .medium))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(style.color)
+        .padding(.horizontal, 9).padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(style.color.opacity(0.12))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(style.color.opacity(0.28), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+    }
+
+    /// Icon + color per agent tool: inspecting = blue, editing = amber,
+    /// running = green, sub-task = accent.
+    private static func toolStyle(_ name: String) -> (symbol: String, color: Color) {
+        switch name {
+        case "Read":                         return ("doc.text", Theme.highlight)
+        case "Edit", "Write", "NotebookEdit": return ("pencil.line", Theme.warning)
+        case "Bash":                         return ("terminal", Theme.success)
+        case "Grep", "Glob":                 return ("magnifyingglass", Theme.highlight)
+        case "Task":                         return ("sparkles", Theme.accent)
+        default:                              return ("gearshape", Theme.textSecondary)
         }
     }
 

@@ -62,6 +62,11 @@ final class ClaudeCodeProvider: AIProvider {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: cli.binary)
             process.arguments = ["-p", prompt, "--output-format", "text", "--model", "haiku"]
+            // Run these helper calls in a neutral temp dir (not the app's inherited
+            // cwd, which can be "/" or home) so the CLI doesn't scan into
+            // TCC-protected folders (~/Pictures, ~/Music) and trigger Photos /
+            // Apple Music permission prompts on send.
+            process.currentDirectoryURL = FileManager.default.temporaryDirectory
             var env = ProcessInfo.processInfo.environment
             env["PATH"] = cli.path
             process.environment = env
@@ -111,6 +116,11 @@ final class ClaudeCodeProvider: AIProvider {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: cli.binary)
             process.arguments = ["-p", prompt, "--output-format", "text", "--model", "haiku"]
+            // Run these helper calls in a neutral temp dir (not the app's inherited
+            // cwd, which can be "/" or home) so the CLI doesn't scan into
+            // TCC-protected folders (~/Pictures, ~/Music) and trigger Photos /
+            // Apple Music permission prompts on send.
+            process.currentDirectoryURL = FileManager.default.temporaryDirectory
             var env = ProcessInfo.processInfo.environment
             env["PATH"] = cli.path
             process.environment = env
@@ -142,6 +152,11 @@ final class ClaudeCodeProvider: AIProvider {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: cli.binary)
             process.arguments = ["-p", prompt, "--output-format", "text", "--model", "haiku"]
+            // Run these helper calls in a neutral temp dir (not the app's inherited
+            // cwd, which can be "/" or home) so the CLI doesn't scan into
+            // TCC-protected folders (~/Pictures, ~/Music) and trigger Photos /
+            // Apple Music permission prompts on send.
+            process.currentDirectoryURL = FileManager.default.temporaryDirectory
             var env = ProcessInfo.processInfo.environment
             env["PATH"] = cli.path
             process.environment = env

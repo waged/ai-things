@@ -12,33 +12,47 @@ final class AttachmentService {
     /// files (file URLs). Returns [] when the clipboard holds only text.
     func attachmentsFromPasteboard() -> [UserAttachment] {
         let pb = NSPasteboard.general
-        var result: [UserAttachment] = []
 
-        // 1) File URLs (e.g. a screenshot saved then copied in Finder).
+        // 1) File URLs (a file copied in Finder) — typed by its own extension.
         if let urls = pb.readObjects(forClasses: [NSURL.self],
-                                     options: [.urlReadingFileURLsOnly: true]) as? [URL] {
-            for url in urls { result.append(attachment(for: url)) }
+                                     options: [.urlReadingFileURLsOnly: true]) as? [URL],
+           !urls.isEmpty {
+            return urls.map { attachment(for: $0) }
         }
 
-        // 2) Raw image data on the clipboard (Cmd-Ctrl-Shift-4 screenshots, copied images).
-        if result.isEmpty,
-           let images = pb.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage] {
-            for image in images {
-                if let data = image.pngData() {
-                    // Name keyed on the attachment's own id so the chat name,
-                    // the inline token, and the saved file all match.
-                    var attachment = UserAttachment(kind: .image, name: "image.png", imageData: data)
-                    attachment.name = "image-\(attachment.shortID).png"
-                    result.append(attachment)
-                }
-            }
+        // 2) Real bitmap image data ONLY (screenshots / copied images). Crucially,
+        //    require an actual PNG/TIFF/JPEG type before reading NSImage: NSImage
+        //    also decodes RTF/RTFD, so Universal Clipboard rich text would
+        //    otherwise be turned into a bogus "image". Rich text falls through to
+        //    pasteboardText() and is pasted as plain text instead.
+        let bitmapTypes: [NSPasteboard.PasteboardType] = [.png, .tiff, .init("public.jpeg")]
+        guard pb.availableType(from: bitmapTypes) != nil,
+              let images = pb.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage] else {
+            return []
         }
-        return result
+        return images.compactMap { image in
+            guard let data = image.pngData() else { return nil }
+            // Name keyed on the attachment's own id so the chat name, the inline
+            // token, and the saved file all match.
+            var attachment = UserAttachment(kind: .image, name: "image.png", imageData: data)
+            attachment.name = "image-\(attachment.shortID).png"
+            return attachment
+        }
     }
 
-    /// Plain text currently on the pasteboard, if any.
+    /// Plain text currently on the pasteboard, if any. Falls back to flattening
+    /// rich text (RTF/RTFD) to plain text — Universal Clipboard often delivers
+    /// RTF, and we want it pasted as text, not as rich text.
     func pasteboardText() -> String? {
-        NSPasteboard.general.string(forType: .string)
+        let pb = NSPasteboard.general
+        if let s = pb.string(forType: .string), !s.isEmpty { return s }
+        for type in [NSPasteboard.PasteboardType.rtf, .rtfd] {
+            if let data = pb.data(forType: type),
+               let attributed = try? NSAttributedString(data: data, options: [:], documentAttributes: nil) {
+                return attributed.string
+            }
+        }
+        return nil
     }
 
     // MARK: - Pickers

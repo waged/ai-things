@@ -35,12 +35,42 @@ struct UserAttachment: Identifiable, Codable, Equatable {
         self.snippet = snippet
     }
 
+    /// Lowercased file extension (from the path, else the name).
+    var fileExtension: String {
+        ((path ?? name) as NSString).pathExtension.lowercased()
+    }
+
+    /// Short type badge shown next to the name, e.g. "RTF", "TXT", "PNG".
+    var typeLabel: String {
+        let ext = fileExtension
+        if !ext.isEmpty { return ext.uppercased() }
+        switch kind {
+        case .image: return "IMG"
+        case .codeSnippet: return "CODE"
+        case .filePath: return "PATH"
+        case .file: return "FILE"
+        }
+    }
+
+    /// SF Symbol for the chip / inline icon — specific to the file type.
     var symbol: String {
         switch kind {
         case .image:       return "photo"
-        case .file:        return "doc"
         case .filePath:    return "link"
         case .codeSnippet: return "chevron.left.forwardslash.chevron.right"
+        case .file:
+            switch fileExtension {
+            case "txt", "md", "markdown", "log", "text":  return "doc.text"
+            case "rtf", "rtfd":                           return "doc.richtext"
+            case "pdf":                                   return "doc.fill"
+            case "json", "xml", "yml", "yaml", "plist", "toml": return "curlybraces"
+            case "csv":                                   return "tablecells"
+            case "zip", "gz", "tar", "tgz":               return "archivebox"
+            case "swift", "js", "ts", "py", "java", "c", "h", "cpp",
+                 "rb", "go", "rs", "kt", "dart", "html", "css", "sh":
+                return "chevron.left.forwardslash.chevron.right"
+            default:                                      return "doc"
+            }
         }
     }
 

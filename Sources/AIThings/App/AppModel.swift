@@ -185,6 +185,18 @@ final class AppModel: ObservableObject {
         session.id == sid ? session.claudeSessionID : sessions.first { $0.id == sid }?.claudeSessionID
     }
 
+    private func chatBranch(of sid: UUID) -> String? {
+        session.id == sid ? session.branch : sessions.first { $0.id == sid }?.branch
+    }
+
+    private func setChatBranch(_ branch: String?, for sid: UUID) {
+        if session.id == sid {
+            session.branch = branch
+        } else if let i = sessions.firstIndex(where: { $0.id == sid }) {
+            sessions[i].branch = branch
+        }
+    }
+
     /// Remember the CLI session id on the chat that owned this turn (which may no
     /// longer be the one on screen). Called via the request's `onSessionID`.
     private func storeClaudeSession(_ id: String, for sid: UUID) {
@@ -310,10 +322,13 @@ final class AppModel: ObservableObject {
             return
         }
         currentBranch = await gitService.currentBranch(at: url)
-        // Remember the branch the on-screen chat is working on, so switching back
-        // to it later re-checks-out that branch.
-        if belongsToCurrentProject(session) { session.branch = currentBranch }
         branches = await gitService.listBranches(at: url)
+        // Bind the on-screen chat to its topic branch — once, and never to base
+        // (a chat on main has no dedicated branch until it starts real work).
+        if belongsToCurrentProject(session), (session.branch ?? "").isEmpty,
+           let cb = currentBranch, cb != baseBranch {
+            session.branch = cb
+        }
         hasUncommittedChanges = await gitService.hasUncommittedChanges(at: url)
         changedFiles = await gitService.changedFiles(at: url)
         let ab = await gitService.aheadBehind(at: url)
@@ -647,12 +662,10 @@ final class AppModel: ObservableObject {
         nameChatIfNeeded(sid, from: messageText)
         warnIfConcurrentAgent(for: sid)
 
-        // Feature/Bug mode: when starting from the base branch, auto-create a
-        // branch named from the user's text. (The mode itself stays on and keeps
-        // framing the prompt until the user turns it off.)
-        if taskMode != .none, isGitRepo, currentBranch == baseBranch {
-            await autoCreateBranch(from: messageText, mode: taskMode)
-        }
+        // Keep this chat on its own branch: reuse it for follow-ups (re-creating
+        // it from base if it was already merged), only creating a fresh branch
+        // for the chat's first task.
+        await ensureChatBranch(sid, from: messageText)
 
         // Build the AI prompt: replace each inline token with the attachment's
         // file path so the model sees exactly where each image/file belongs.
@@ -913,19 +926,57 @@ final class AppModel: ObservableObject {
         taskMode = (taskMode == mode) ? .none : mode
     }
 
-    /// Create (and switch to) a branch named from the user's text. No-op outside a git repo.
-    private func autoCreateBranch(from text: String, mode: TaskMode) async {
+    /// Make this chat's turn run on the chat's OWN branch — a chat is bound to
+    /// one topic branch for its whole life:
+    ///  - If the chat already has a branch, reuse it: check it out, or (if it was
+    ///    merged/deleted) recreate it from base so we keep adding code to the topic.
+    ///  - Only the chat's FIRST task (in Feature/Bug mode, starting from base)
+    ///    creates a freshly-named branch. A chat already on a non-base branch
+    ///    simply adopts it.
+    private func ensureChatBranch(_ sid: UUID, from text: String) async {
         guard isGitRepo, let url = projectURL else { return }
-        let kind: BranchKind = (mode == .bug) ? .bugfix : .feature
-        let name = Self.formatBranchName(kind: kind, name: Self.branchKeywords(from: text))
-        guard !name.isEmpty else { return }
-        let result = try? await gitService.createBranch(name, at: url)
-        if result?.succeeded == true {
-            appendSystem("Created branch \(name)")
-        } else if let out = result?.combined, !out.isEmpty {
-            appendSystem(out) // e.g. branch already exists
+
+        if let target = chatBranch(of: sid), !target.isEmpty {
+            guard currentBranch != target else { return } // already on the chat's branch
+            let exists = branches.contains { !$0.isRemote && $0.name == target }
+            if exists {
+                let r = try? await gitService.checkout(branch: target, at: url)
+                if r?.succeeded == true {
+                    appendSystem("↪︎ Continuing this chat on branch \(target)", to: sid)
+                } else {
+                    appendSystem("⚠︎ Couldn't switch to \(target) (commit or stash changes first): \(r?.combined ?? "")", to: sid)
+                }
+            } else {
+                // Merged away or deleted — recreate from base to keep building on it.
+                if let base = baseBranch, currentBranch != base {
+                    _ = try? await gitService.checkout(branch: base, at: url)
+                }
+                let r = try? await gitService.createBranch(target, at: url)
+                appendSystem(r?.succeeded == true
+                    ? "↪︎ Recreated branch \(target) to continue this chat"
+                    : "↪︎ Continuing this chat on branch \(target)", to: sid)
+            }
+            await refreshGit()
+            return
         }
-        await refreshGit()
+
+        // First task in this chat — give it a branch.
+        if taskMode != .none, currentBranch == baseBranch {
+            let kind: BranchKind = (taskMode == .bug) ? .bugfix : .feature
+            let name = Self.formatBranchName(kind: kind, name: Self.branchKeywords(from: text))
+            guard !name.isEmpty else { return }
+            let result = try? await gitService.createBranch(name, at: url)
+            if result?.succeeded == true {
+                appendSystem("Created branch \(name)", to: sid)
+            } else if let out = result?.combined, !out.isEmpty {
+                appendSystem(out, to: sid) // e.g. branch already exists
+            }
+            await refreshGit()
+            setChatBranch(name, for: sid)
+        } else if let cb = currentBranch, cb != baseBranch {
+            // Already on a non-base branch — bind the chat to it.
+            setChatBranch(cb, for: sid)
+        }
     }
 
     /// Words dropped from branch slugs — the kind prefix (feature/ bugfix/)
